@@ -406,32 +406,44 @@ check_memory() {
     fi
 
     # Summary: count populated vs total
-    local slot_count populated total_installed
+    local slot_count populated
     slot_count="$(dmidecode -t memory | grep -c "Memory Device" || true)"
-    populated="$(echo "$mem_output" | grep -c "Size:" || true)"
+    populated="$(echo "$mem_output" | grep -c -E '^[[:space:]]*Size:' || true)"
 
     # Calculate total installed size from populated DIMMs
-    total_installed=0
+    local total_installed_mb=0
     while IFS= read -r size_line; do
-        # Example: "Size: 16384 MB" or "Size: 32 GB"
-        local value unit mb
-        value=$(echo "$size_line" | awk '{print $2}')
-        unit=$(echo "$size_line" | awk '{print toupper($3)}')
-        case "$unit" in
-            KB) mb=$((value / 1024));;
-            MB) mb=$((value));;
-            GB) mb=$((value * 1024));;
-            TB) mb=$((value * 1024 * 1024));;
-            *)  mb=0;;
-        esac
-        (( total_installed += mb ))
-    done < <(echo "$mem_output" | grep -E "^Size:" | grep -v "No Module Installed")
+        # Trim leading spaces and parse: "Size: <num> <UNIT>"
+        size_line="$(echo "$size_line" | sed -E 's/^[[:space:]]+//')"
+        # Skip any non-populated oddities just in case
+        if echo "$size_line" | grep -q "No Module Installed"; then
+            continue
+        fi
+        # Extract "num" and "UNIT"
+        # Works for: "Size: 16384 MB", "Size: 16 GB", etc.
+        if [[ "$size_line" =~ ^Size:\ +([0-9]+)\ +([KkMmGgTt][Bb]) ]]; then
+            value="${BASH_REMATCH[1]}"
+            unit="${BASH_REMATCH[2]}"
+            # Normalize unit
+            unit="$(echo "$unit" | tr '[:lower:]' '[:upper:]')"
+            case "$unit" in
+                KB) (( total_installed_mb += value / 1024 ));;
+                MB) (( total_installed_mb += value ));;
+                GB) (( total_installed_mb += value * 1024 ));;
+                TB) (( total_installed_mb += value * 1024 * 1024 ));;
+            esac
+        fi
+    done < <(echo "$mem_output" | grep -E '^[[:space:]]*Size:')
 
-    # Convert total to human-readable GB
-    local total_gb=$(( total_installed / 1024 ))
+    # Human-readable totals
+    local total_gb=$(( total_installed_mb / 1024 ))
     echo ""
     info "Memory slots: $populated populated out of $slot_count total"
-    info "Total Installed Memory: ${total_gb} GB"
+    if [[ $total_gb -gt 0 ]]; then
+        info "Total Installed Memory: ${total_gb} GB"
+    else
+        warn "Total Installed Memory could not be parsed from module sizes (reported total: $total_mem)"
+    fi
     info "Total System Memory (reported): $total_mem"
     echo ""
     return 0
