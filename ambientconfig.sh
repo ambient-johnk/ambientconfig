@@ -225,7 +225,7 @@ check_network_interfaces() {
     # Quick Overview (avoid grep -v failure under set -e)
     echo ""
     info "Quick Overview:"
-    ip -br link show | awk '$1 != "lo" {print}'
+    ip -br link show | awk '$1 != "lo" {print}' || true
 
     # Show routing table
     echo ""
@@ -1185,7 +1185,7 @@ main_menu() {
         read -p "Select an option: " choice
 
         case $choice in
-            1) check_network_interfaces ;;
+            1) check_network_interfaces || true ;;
             2) check_nvidia_gpu ;;
             3) check_cpu ;;
             4) check_memory ;;
