@@ -90,13 +90,18 @@ check_network_interfaces() {
 
     # Build interface list (exclude loopback) safely (no grep -v → no set -e pitfall)
     local interfaces
-    interfaces="$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{split($2,a,"@"); print a[1]}')"
+    # Exclude lo, docker*, veth*
+    interfaces="$(ip -o link show 2>/dev/null \
+    | awk -F': ' '{
+        split($2,a,"@"); name=a[1];
+        if (name!="lo" && name!="" && name !~ /^(veth|docker)/) print name
+        }')"
 
     if [[ -z "$interfaces" ]]; then
         warn "No non-loopback network interfaces found."
         echo ""
         info "Quick Overview:"
-        ip -br link show | awk '{print}' || true
+        ip -br link show | awk '$1!="lo" && $1 !~ /^(veth|docker)/ {print}' || true
 
         echo ""
         info "Default Routes:"
@@ -224,7 +229,7 @@ check_network_interfaces() {
     # Quick Overview (avoid grep -v failure under set -e)
     echo ""
     info "Quick Overview:"
-    ip -br link show | awk '$1 != "lo" {print}' || true
+    ip -br link show | awk '$1!="lo" && $1 !~ /^(veth|docker)/ {print}' || true
 
     # Show routing table
     echo ""
