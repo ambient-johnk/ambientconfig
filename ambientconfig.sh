@@ -285,19 +285,34 @@ check_cpu() {
     cpu_threads="$(lscpu | grep "^Thread(s) per core:" | cut -d: -f2 | xargs)"
     cores_per_socket="$(lscpu | grep "Core(s) per socket:" | cut -d: -f2 | xargs)"
     sockets="$(lscpu | grep "Socket(s):" | cut -d: -f2 | xargs)"
-    cpu_mhz="$(lscpu | grep "CPU MHz:" | cut -d: -f2 | xargs)"
-    cpu_max_mhz="$(lscpu | grep "CPU max MHz:" | cut -d: -f2 | xargs)"
+    cpu_mhz="$(lscpu | awk -F: '/CPU MHz/{gsub(/[ \t]/,"",$2); print $2; exit}')"
+    cpu_max_mhz="$(lscpu | awk -F: '/CPU max MHz/{gsub(/[ \t]/,"",$2); print $2; exit}')"
+
+    # Fallback for current speed if lscpu didn't provide it
+    if [[ -z "$cpu_mhz" ]]; then
+        # Average of per-core “cpu MHz” from /proc/cpuinfo
+        local avg
+        avg="$(awk -F: '/^cpu MHz/ {gsub(/[ \t]/,"",$2); sum+=$2; n++} END{if(n) printf "%.0f", sum/n}' /proc/cpuinfo || true)"
+        if [[ -n "$avg" ]]; then
+            cpu_mhz="$avg"
+        fi
+    fi
 
     info "CPU Model: $cpu_model"
     info "Total Logical CPUs: $cpu_cores"
     info "Sockets: $sockets"
     info "Cores per Socket: $cores_per_socket"
     info "Threads per Core: $cpu_threads"
-    info "Current Speed: ${cpu_mhz} MHz"
+    if [[ -n "$cpu_mhz" ]]; then
+        info "Current Speed: ${cpu_mhz} MHz"
+    else
+        warn "Current Speed: unavailable (no CPU MHz from lscpu or /proc/cpuinfo)"
+    fi
     if [[ -n "$cpu_max_mhz" ]]; then
         info "Max Speed: ${cpu_max_mhz} MHz"
     fi
 
+    # Capture full lscpu output to report (optional)
     if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "" >> "$REPORT_FILE"
         echo "Full lscpu output:" >> "$REPORT_FILE"
@@ -305,21 +320,41 @@ check_cpu() {
         echo "" >> "$REPORT_FILE"
     fi
 
+    # -------- Per-core current frequencies --------
     info "Per-core current frequencies:"
-    local freq_output=""
-    for cpu in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
-        if [[ -f "$cpu" ]]; then
-            local core freq freq_mhz
-            core="${cpu%/cpufreq/scaling_cur_freq}"  # .../cpu7
-            core="${core##*/}"                       # cpu7
-            core="${core#cpu}"                       # 7
-            freq="$(cat "$cpu")"
-            freq_mhz=$((freq / 1000))
-            echo "  CPU$core: ${freq_mhz} MHz"
-            freq_output+="CPU$core: ${freq_mhz} MHz\n"
-        fi
-    done
-    capture_output "$freq_output"
+
+    # Prefer sysfs cpufreq if present; otherwise fall back to /proc/cpuinfo
+    if compgen -G "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq" > /dev/null; then
+        # sysfs path exists
+        local freq_output=""
+        local f
+        for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+            if [[ -f "$f" ]]; then
+                local core freq_khz mhz
+                core="${f%/cpufreq/scaling_cur_freq}"   # .../cpu7
+                core="${core##*/}"                      # cpu7
+                core="${core#cpu}"                      # 7
+                freq_khz="$(cat "$f" 2>/dev/null || true)"
+                if [[ "$freq_khz" =~ ^[0-9]+$ ]]; then
+                    mhz=$(( freq_khz / 1000 ))
+                    echo "  CPU${core}: ${mhz} MHz"
+                    freq_output+="CPU${core}: ${mhz} MHz\n"
+                else
+                    echo "  CPU${core}: n/a"
+                    freq_output+="CPU${core}: n/a\n"
+                fi
+            fi
+        done
+        capture_output "$freq_output"
+    else
+        # Fallback: /proc/cpuinfo per-core
+        # Some systems list logical CPUs as "processor : N" with "cpu MHz : XXX"
+        awk -F: '
+            /^processor[ \t]*:/ { cpu=$2; gsub(/[ \t]/,"",cpu); next }
+            /^cpu MHz[ \t]*:/   { mhz=$2; gsub(/^[ \t]+|[ \t]+$/,"",mhz);
+                                  printf "  CPU%s: %s MHz\n", cpu, mhz }
+        ' /proc/cpuinfo || true
+    fi
 
     return 0
 }
