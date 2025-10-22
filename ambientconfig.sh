@@ -363,7 +363,8 @@ check_memory() {
     populated="$(echo "$mem_output" | grep -c "Size:" || true)"
     echo ""
     info "Memory slots: $populated populated out of $slot_count total"
-
+    info "Total System Memory: $total_mem"
+    echo ""
     return 0
 }
 
