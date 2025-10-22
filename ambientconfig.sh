@@ -1139,12 +1139,14 @@ generate_full_report() {
 
     initialize_report
 
-    run_all_hardware_checks || true
-
     echo ""
     echo "=========================================="
     report_section "BASIC SYSTEM VERIFICATION"
-    verify_commands
+    verify_commands || true
+
+    echo ""
+    echo "=========================================="
+    run_all_hardware_checks || true
 
     finalize_report
 
