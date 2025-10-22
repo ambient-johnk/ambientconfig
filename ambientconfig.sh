@@ -102,12 +102,14 @@ check_network_interfaces() {
     info "Found Network Interfaces:"
     echo ""
     
-    for iface in $interfaces; do
+    while IFS= read -r iface; do
+        [[ -z "$iface" ]] && continue
+        
         ((iface_count++))
         
         # Get interface details
-        local state=$(ip link show "$iface" | grep -oP 'state \K\w+')
-        local mac=$(ip link show "$iface" | grep -oP 'link/ether \K[0-9a-f:]+')
+        local state=$(ip link show "$iface" 2>/dev/null | grep -oP 'state \K\w+' || echo "UNKNOWN")
+        local mac=$(ip link show "$iface" 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+' || echo "N/A")
         local speed=""
         local duplex=""
         local driver=""
@@ -116,7 +118,7 @@ check_network_interfaces() {
         # Get speed if interface is up
         if [[ -f "/sys/class/net/$iface/speed" ]]; then
             speed=$(cat "/sys/class/net/$iface/speed" 2>/dev/null || echo "N/A")
-            if [[ "$speed" != "N/A" && "$speed" -gt 0 ]]; then
+            if [[ "$speed" != "N/A" && "$speed" != "-1" && "$speed" -gt 0 ]]; then
                 speed="${speed}Mbps"
             else
                 speed="Unknown"
@@ -147,8 +149,8 @@ check_network_interfaces() {
         fi
         
         # Get IP addresses
-        local ipv4=$(ip -4 addr show "$iface" | grep -oP 'inet \K[\d.]+/\d+' | head -1)
-        local ipv6=$(ip -6 addr show "$iface" | grep -oP 'inet6 \K[0-9a-f:]+/\d+' | grep -v "^fe80" | head -1)
+        local ipv4=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+/\d+' | head -1)
+        local ipv6=$(ip -6 addr show "$iface" 2>/dev/null | grep -oP 'inet6 \K[0-9a-f:]+/\d+' | grep -v "^fe80" | head -1)
         
         # Count up/down
         if [[ "$state" == "UP" ]]; then
@@ -179,18 +181,20 @@ check_network_interfaces() {
         
         # Capture to report
         if $REPORT_MODE; then
-            echo "Interface: $iface" >> "$REPORT_FILE"
-            echo "  State: $state" >> "$REPORT_FILE"
-            echo "  MAC: $mac" >> "$REPORT_FILE"
-            echo "  Driver: $driver" >> "$REPORT_FILE"
-            [[ "$pci_addr" != "N/A" ]] && echo "  PCI: $pci_addr" >> "$REPORT_FILE"
-            [[ "$state" == "UP" ]] && echo "  Speed: $speed" >> "$REPORT_FILE"
-            [[ "$state" == "UP" ]] && echo "  Duplex: $duplex" >> "$REPORT_FILE"
-            [[ -n "$ipv4" ]] && echo "  IPv4: $ipv4" >> "$REPORT_FILE"
-            [[ -n "$ipv6" ]] && echo "  IPv6: $ipv6" >> "$REPORT_FILE"
-            echo "" >> "$REPORT_FILE"
+            {
+                echo "Interface: $iface"
+                echo "  State: $state"
+                echo "  MAC: $mac"
+                echo "  Driver: $driver"
+                [[ "$pci_addr" != "N/A" ]] && echo "  PCI: $pci_addr"
+                [[ "$state" == "UP" ]] && echo "  Speed: $speed"
+                [[ "$state" == "UP" ]] && echo "  Duplex: $duplex"
+                [[ -n "$ipv4" ]] && echo "  IPv4: $ipv4"
+                [[ -n "$ipv6" ]] && echo "  IPv6: $ipv6"
+                echo ""
+            } >> "$REPORT_FILE"
         fi
-    done
+    done <<< "$interfaces"
     
     # Summary
     info "Summary: $iface_count interface(s) found - $up_count UP, $down_count DOWN"
@@ -198,7 +202,7 @@ check_network_interfaces() {
     # Show brief table view
     echo ""
     info "Quick Overview:"
-    ip -br link show | grep -v "lo" | column -t
+    ip -br link show | grep -v "lo"
     
     # Show routing table
     echo ""
@@ -1210,7 +1214,7 @@ main_menu() {
     while true; do
         echo ""
         echo "======================================"
-        echo "Linux System Configuration Script v0.1"
+        echo "Linux System Configuration Script v0.2"
         echo "======================================"
         echo "Hardware Verification:"
         echo "  1. Check Network Interfaces"
