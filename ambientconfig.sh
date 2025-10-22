@@ -89,12 +89,21 @@ check_network_interfaces() {
     log "Checking network interfaces..."
 
     # Build interface list (exclude loopback) safely (no grep -v → no set -e pitfall)
+    # Get all network interfaces (excluding loopback)
     local interfaces
     interfaces="$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{split($2,a,"@"); print a[1]}')"
 
     if [[ -z "$interfaces" ]]; then
-        error "No network interfaces found!"
-        return 1
+        warn "No non-loopback network interfaces found."
+        echo ""
+        info "Quick Overview:"
+        ip -br link show | awk '{print}' || true
+
+        echo ""
+        info "Default Routes:"
+        ip route show | grep default || echo "  No default route configured"
+
+        return 0   # <-- was 'return 1'
     fi
 
     local iface_count=0
