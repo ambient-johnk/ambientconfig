@@ -449,249 +449,167 @@ check_power_supplies() {
 
 check_raid_controller() {
     report_section "RAID CONTROLLER INFORMATION"
-    log "Checking RAID controller configuration..."
+    log "Checking RAID controller configuration (perccli64)..."
 
-    local found_controller=false
+    local PERC="/opt/MegaRAID/perccli/perccli64"
+
+    if [[ ! -x "$PERC" ]]; then
+        error "perccli64 not found or not executable at $PERC"
+        warn "Install/verify MegaRAID PERC CLI (perccli64) and path."
+        return 1
+    fi
+
     local raid_output=""
     local raid_warnings=0
 
-    # MegaRAID (LSI/Broadcom/Avago)
-    if command -v megacli &> /dev/null || command -v MegaCli64 &> /dev/null; then
-        local megacli_cmd
-        megacli_cmd="$(command -v megacli || command -v MegaCli64)"
-        found_controller=true
+    # -------- Controller summary --------
+    info "Controller summary (/c0 show all):"
+    local ctrl_all
+    ctrl_all="$("$PERC" /c0 show all 2>/dev/null || true)"
+    if [[ -z "$ctrl_all" ]]; then
+        error "perccli64 returned no data for /c0 show all"
+        return 1
+    fi
+    echo "$ctrl_all"
+    raid_output+="$ctrl_all"$'\n'
 
-        info "MegaRAID controller detected"
+    # Extract some basics (best-effort; layout varies by version)
+    local prod_name fw_ver roc_temp
+    prod_name="$(echo "$ctrl_all" | awk -F':' '/Product Name/ {gsub(/^[ \t]+/,"",$2); print $2; exit}')"
+    fw_ver="$(echo "$ctrl_all"   | awk -F':' '/FW Version/   {gsub(/^[ \t]+/,"",$2); print $2; exit}')"
+    roc_temp="$(echo "$ctrl_all" | awk -F':' '/ROC temperature/ {gsub(/^[ \t]+/,"",$2); print $2; exit}')"
 
-        local adapter_info
-        adapter_info="$($megacli_cmd -AdpAllInfo -aALL | grep -E "Product Name|Memory Size|ROC temperature" || true)"
-        echo "$adapter_info"
-        raid_output+="$adapter_info\n"
+    [[ -n "$prod_name" ]] && info "  Product: $prod_name"
+    [[ -n "$fw_ver"   ]] && info "  FW: $fw_ver"
+    [[ -n "$roc_temp" ]] && info "  ROC Temp: $roc_temp"
 
-        echo ""
-        info "Checking BBU/Cache Vault status:"
-        local bbu_full bbu_info bbu_state
-        bbu_full="$($megacli_cmd -AdpBbuCmd -GetBbuStatus -aALL || true)"
-        bbu_info="$(echo "$bbu_full" | grep -E "Battery State|Charger Status|Temperature|Remaining Capacity|Voltage|Current" || true)"
-        echo "$bbu_info"
-        raid_output+="\nBBU Status:\n$bbu_info\n"
-
-        bbu_state="$(echo "$bbu_full" | awk -F': ' '/Battery State:/ {print $2; exit}')"
-        if [[ "$bbu_state" == "Optimal" ]]; then
-            log "BBU Status: Optimal ✓"
-        else
-            error "BBU Status: ${bbu_state:-Unknown} - NOT OPTIMAL!"
-            ((raid_warnings++))
-            raid_output+="\n[ERROR] BBU is not in Optimal state: ${bbu_state:-Unknown}\n"
-        fi
-
-        echo ""
-        info "Checking Virtual Drive cache settings:"
-        local vd_info vd_table
-        vd_info="$($megacli_cmd -LDInfo -Lall -aALL || true)"
-        vd_table="$($megacli_cmd -LDGetProp -Cache -LALL -aALL || true)"
-        echo "$vd_table"
-        raid_output+="\nVirtual Drive Info:\n$vd_info\n"
-
-        echo ""
-        info "Analyzing cache policies:"
-        local ld_count
-        ld_count="$($megacli_cmd -LDGetNum -aALL | awk -F': ' '/Number of Virtual Drives/ {print $2}' || echo 0)"
-
-        for ((ld=0; ld<ld_count; ld++)); do
-            local cache_policy vd_state
-            cache_policy="$($megacli_cmd -LDGetProp -Cache -L${ld} -aALL | grep "Current Cache Policy" || true)"
-            vd_state="$($megacli_cmd -LDInfo -L${ld} -aALL | awk -F': ' '/State/ {print $2; exit}' || echo "Unknown")"
-
-            echo "  VD ${ld}: State=$vd_state"
-            [[ -n "$cache_policy" ]] && echo "    $cache_policy"
-
-            if [[ "$vd_state" == "Optimal" ]]; then
-                log "    VD ${ld} State: Optimal ✓"
-            else
-                error "    VD ${ld} State: $vd_state - NOT OPTIMAL!"
-                ((raid_warnings++))
-                raid_output+="\n[ERROR] VD ${ld} is not Optimal: $vd_state\n"
-            fi
-
-            if echo "$cache_policy" | grep -q "WriteBack"; then
-                if echo "$cache_policy" | grep -q "ReadAheadNone"; then
-                    warn "    VD ${ld} Cache: RWBD (WriteBack, Battery Dependent) - EXCEPTION!"
-                    warn "    Cache may fall back to WriteThrough if BBU fails"
-                    ((raid_warnings++))
-                    raid_output+="\n[WARN] VD ${ld} Cache Policy: RWBD - Should be RWTD for optimal performance\n"
-                elif echo "$cache_policy" | grep -q "ReadAhead"; then
-                    log "    VD ${ld} Cache: RWTD (WriteBack, Read Ahead) ✓"
-                else
-                    info "    VD ${ld} Cache: WriteBack enabled"
-                fi
-            elif echo "$cache_policy" | grep -q "WriteThrough"; then
-                warn "    VD ${ld} Cache: WriteThrough mode - Performance impact!"
-                ((raid_warnings++))
-                raid_output+="\n[WARN] VD ${ld} Cache Policy: WriteThrough - Not optimal\n"
-            fi
-        done
-
-        echo ""
-        info "Virtual Drive Summary:"
-        $megacli_cmd -LDGetProp -DskCache -LALL -aALL || true
-
-        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
-            {
-                echo "" 
-                echo "Full MegaCLI output:"
-                $megacli_cmd -AdpAllInfo -aALL
-                echo ""
-                $megacli_cmd -AdpBbuCmd -GetBbuStatus -aALL
-                echo ""
-                $megacli_cmd -LDInfo -Lall -aALL
-            } >> "$REPORT_FILE" 2>&1
-        fi
-
-    # StorCLI
-    elif command -v storcli &> /dev/null || command -v storcli64 &> /dev/null; then
-        local storcli_cmd
-        storcli_cmd="$(command -v storcli || command -v storcli64)"
-        found_controller=true
-
-        info "RAID controller detected (StorCLI)"
-
-        local controller_info
-        controller_info="$($storcli_cmd /c0 show | grep -A 10 -E "Product Name|Memory Size|ROC temperature" || true)"
-        echo "$controller_info"
-        raid_output+="$controller_info\n"
-
-        echo ""
-        info "Checking BBU/CV status:"
-        local bbu_cv_info
-        bbu_cv_info="$($storcli_cmd /c0/cv show all 2>/dev/null || $storcli_cmd /c0/bbu show all 2>/dev/null || true)"
+    # -------- Battery / CacheVault status --------
+    echo ""
+    info "Checking BBU/CacheVault status..."
+    # Try CV first (newer controllers), fallback to BBU
+    local bbu_cv_info
+    bbu_cv_info="$("$PERC" /c0/cv show all 2>/dev/null || "$PERC" /c0/bbu show all 2>/dev/null || true)"
+    if [[ -n "$bbu_cv_info" ]]; then
         echo "$bbu_cv_info"
-        raid_output+="\nBBU/CV Status:\n$bbu_cv_info\n"
-
-        if echo "$bbu_cv_info" | grep -q "Optimal"; then
+        raid_output+=$'\n'"BBU/CV Status:"$'\n'"$bbu_cv_info"$'\n'
+        # Determine state (look for 'Optimal' first)
+        if echo "$bbu_cv_info" | grep -qi "Optimal"; then
             log "BBU/CV Status: Optimal ✓"
         else
-            local state
-            state="$(echo "$bbu_cv_info" | grep -i "state" | head -1 || true)"
-            error "BBU/CV Status: ${state:-Unknown} - NOT OPTIMAL!"
-            ((raid_warnings++))
-            raid_output+="\n[ERROR] BBU/CV is not in Optimal state\n"
-        fi
-
-        echo ""
-        info "Checking virtual drive cache settings:"
-        local vd_cache
-        vd_cache="$($storcli_cmd /c0/vall show all || true)"
-        echo "$vd_cache" | grep -i "cache\|state" || true
-        raid_output+="\nVD Cache:\n$vd_cache\n"
-
-        if echo "$vd_cache" | grep -qi "WB"; then
-            if echo "$vd_cache" | grep -qi "RWBD\|WriteBack.*NR"; then
-                warn "Cache Policy: RWBD detected - EXCEPTION!"
-                ((raid_warnings++))
-                raid_output+="\n[WARN] Cache Policy: RWBD - Should be RWTD\n"
-            else
-                log "Cache Policy: WriteBack enabled ✓"
-            fi
-        else
-            warn "Cache Policy: WriteThrough mode detected"
+            local bstate
+            bstate="$(echo "$bbu_cv_info" | awk -F':' 'tolower($0) ~ /state/ {gsub(/^[ \t]+/,"",$2); print $2; exit}')"
+            error "BBU/CV Status: ${bstate:-Unknown} - NOT OPTIMAL!"
             ((raid_warnings++))
         fi
-
-        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
-            echo "" >> "$REPORT_FILE"
-            echo "Full StorCLI output:" >> "$REPORT_FILE"
-            $storcli_cmd /c0 show all >> "$REPORT_FILE" 2>&1 || true
-        fi
-
-    # HP/HPE Smart Array
-    elif command -v hpacucli &> /dev/null || command -v ssacli &> /dev/null; then
-        local hpcli
-        hpcli="$(command -v ssacli || command -v hpacucli)"
-        found_controller=true
-
-        info "HP/HPE Smart Array controller detected"
-
-        local hp_config
-        hp_config="$($hpcli ctrl all show config || true)"
-        echo "$hp_config"
-        raid_output+="$hp_config\n"
-
-        echo ""
-        info "Checking cache status:"
-        local hp_cache
-        hp_cache="$($hpcli ctrl all show detail | grep -i cache || true)"
-        echo "$hp_cache"
-        raid_output+="\nCache Status:\n$hp_cache\n"
-
-        if echo "$hp_config" | grep -q "OK"; then
-            log "Array Status: OK ✓"
-        else
-            warn "Array Status: Check output above"
-            ((raid_warnings++))
-        fi
-
-        if echo "$hp_cache" | grep -q "Disabled"; then
-            warn "Cache appears to be disabled"
-            ((raid_warnings++))
-        fi
-
-        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
-            echo "" >> "$REPORT_FILE"
-            echo "Full HP Smart Array output:" >> "$REPORT_FILE"
-            $hpcli ctrl all show config detail >> "$REPORT_FILE" 2>&1 || true
-        fi
-
-    # Adaptec
-    elif command -v arcconf &> /dev/null; then
-        found_controller=true
-
-        info "Adaptec RAID controller detected"
-
-        local adaptec_info
-        adaptec_info="$(arcconf getconfig 1 || true)"
-        echo "$adaptec_info"
-        raid_output+="$adaptec_info\n"
-
-        echo ""
-        info "Checking battery backup:"
-        local adaptec_bbu
-        adaptec_bbu="$(arcconf getconfig 1 | grep -A 5 -i battery || true)"
-        echo "$adaptec_bbu"
-        raid_output+="\nBattery:\n$adaptec_bbu\n"
-
-        if echo "$adaptec_bbu" | grep -qi "optimal\|ok"; then
-            log "Battery Status: OK ✓"
-        else
-            warn "Battery Status: Check output above"
-            ((raid_warnings++))
-        fi
-
-        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
-            echo "" >> "$REPORT_FILE"
-            echo "Full Adaptec output:" >> "$REPORT_FILE"
-            arcconf getconfig 1 >> "$REPORT_FILE" 2>&1 || true
-        fi
-
     else
-        warn "No supported RAID controller tools found"
-        warn "Install: megacli/storcli (LSI/Broadcom), ssacli (HP), or arcconf (Adaptec)"
+        warn "No BBU/CV information available from perccli64"
+        ((raid_warnings++))
     fi
 
-    capture_output "$raid_output"
+    # -------- Virtual drive states & cache policy --------
+    echo ""
+    info "Checking Virtual Drive states and cache policies..."
+    local vd_all
+    vd_all="$("$PERC" /c0/vall show all 2>/dev/null || true)"
+    if [[ -z "$vd_all" ]]; then
+        warn "No virtual drive information available from perccli64"
+        ((raid_warnings++))
+    else
+        # Print a concise subset (State/Cache lines)
+        echo "$vd_all" | grep -Ei "^(VD|DG)|State|Cache" || true
+        raid_output+=$'\n'"VD All:"$'\n'"$vd_all"$'\n'
 
-    if [[ "$found_controller" != true ]]; then
-        local lspci_raid
-        lspci_raid="$(lspci | grep -i raid || true)"
-        if [[ -n "$lspci_raid" ]]; then
-            info "RAID controller(s) found in system:"
-            echo "$lspci_raid"
-            capture_output "$lspci_raid"
-            warn "Install appropriate management tools for detailed status"
-        else
-            info "No RAID controllers detected in system"
+        # Parse each VD block for State and Cache policy
+        # VD headers often look like: "VD0 Properties", "Virtual Drive: 0", or "VD number: 0"
+        # We'll infer VD indices by scanning "Virtual Drive:" or "VD[[:space:]]*:" markers.
+        local vd_index state_line cache_line
+        # Normalize lines to simplify parsing
+        while IFS= read -r line; do
+            # Capture VD index
+            if echo "$line" | grep -Eq 'Virtual Drive[:[:space:]]+([0-9]+)|^VD[[:space:]]*([0-9]+)'; then
+                # Print previous VD analysis (if any)
+                if [[ -n "$vd_index" ]]; then
+                    # Evaluate prior VD gathered fields
+                    local vd_state="${state_line#*: }"
+                    local vd_cache="${cache_line#*: }"
+                    if [[ -n "$vd_state" ]]; then
+                        if [[ "$vd_state" =~ ^[Oo]ptimal$ ]]; then
+                            log "  VD $vd_index: State=Optimal ✓"
+                        else
+                            error "  VD $vd_index: State=${vd_state:-Unknown} - NOT OPTIMAL!"
+                            ((raid_warnings++))
+                        fi
+                    fi
+                    if [[ -n "$vd_cache" ]]; then
+                        # Heuristics:
+                        # Prefer WriteBack + ReadAhead (often listed as WB / RA / Cached / etc.)
+                        # Treat RWBD/WriteBack NR or WriteThrough as warnings.
+                        if echo "$vd_cache" | grep -qi "WriteThrough\|WT\b"; then
+                            warn "  VD $vd_index: Cache=WriteThrough - performance impact"
+                            ((raid_warnings++))
+                        elif echo "$vd_cache" | grep -qi "NR\b"; then
+                            warn "  VD $vd_index: Cache=WriteBack NR (battery dependent) - EXCEPTION"
+                            ((raid_warnings++))
+                        else
+                            log  "  VD $vd_index: Cache=$vd_cache ✓"
+                        fi
+                    fi
+                fi
+                # Reset for new VD
+                vd_index="$(echo "$line" | sed -nE 's/.*Virtual Drive[:[:space:]]+([0-9]+).*/\1/p;s/^VD[[:space:]]*([0-9]+).*/\1/p' | head -1)"
+                state_line=""
+                cache_line=""
+                continue
+            fi
+
+            # Capture key lines
+            if [[ -z "$state_line" ]] && echo "$line" | grep -Eq '^[[:space:]]*State[[:space:]]*:'; then
+                state_line="$(echo "$line" | sed -E 's/^[[:space:]]*//')"
+            fi
+            if [[ -z "$cache_line" ]] && echo "$line" | grep -Eq '^[[:space:]]*Cache[[:space:]]*:'; then
+                cache_line="$(echo "$line" | sed -E 's/^[[:space:]]*//')"
+            fi
+        done < <(printf '%s\n' "$vd_all")
+
+        # Flush last VD parsed (if any)
+        if [[ -n "$vd_index" ]]; then
+            local vd_state="${state_line#*: }"
+            local vd_cache="${cache_line#*: }"
+            if [[ -n "$vd_state" ]]; then
+                if [[ "$vd_state" =~ ^[Oo]ptimal$ ]]; then
+                    log "  VD $vd_index: State=Optimal ✓"
+                else
+                    error "  VD $vd_index: State=${vd_state:-Unknown} - NOT OPTIMAL!"
+                    ((raid_warnings++))
+                fi
+            fi
+            if [[ -n "$vd_cache" ]]; then
+                if echo "$vd_cache" | grep -qi "WriteThrough\|WT\b"; then
+                    warn "  VD $vd_index: Cache=WriteThrough - performance impact"
+                    ((raid_warnings++))
+                elif echo "$vd_cache" | grep -qi "NR\b"; then
+                    warn "  VD $vd_index: Cache=WriteBack NR (battery dependent) - EXCEPTION"
+                    ((raid_warnings++))
+                else
+                    log  "  VD $vd_index: Cache=$vd_cache ✓"
+                fi
+            fi
         fi
-        return 1
+    fi
+
+    # -------- Summary & reporting --------
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo ""
+            echo "perccli64 summary (/c0 show all):"
+            echo "$ctrl_all"
+            echo ""
+            echo "BBU/CV:"
+            echo "$bbu_cv_info"
+            echo ""
+            echo "VD details:"
+            echo "$vd_all"
+        } >> "$REPORT_FILE"
     fi
 
     echo ""
@@ -703,6 +621,7 @@ check_raid_controller() {
 
     return $raid_warnings
 }
+
 
 run_all_hardware_checks() {
     log "Running comprehensive hardware verification..."
