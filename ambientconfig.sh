@@ -2,6 +2,14 @@
 
 # Linux System Configuration Script
 # Functions: Hardware verification, Command checks, Netplan configuration, Volume formatting/mounting
+# Validated for: Ubuntu 24.04 LTS Server
+# 
+# Ubuntu 24.04 Server Compatibility Notes:
+# - Uses systemd-networkd as default network backend (not NetworkManager)
+# - Netplan 1.0+ with networkd renderer
+# - Uses 'routes' syntax instead of deprecated 'gateway4'
+# - Requires dmidecode for hardware detection
+# - networkctl command for network status
 
 set -e
 
@@ -735,6 +743,27 @@ verify_commands() {
         log "OS check passed: Linux"
     fi
     
+    # Check Ubuntu version
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        info "Distribution: $NAME $VERSION"
+        
+        # Check if Ubuntu 24.04 or newer
+        if [[ "$ID" == "ubuntu" ]]; then
+            local version_number=$(echo "$VERSION_ID" | cut -d. -f1)
+            if [[ $version_number -ge 24 ]]; then
+                log "Ubuntu 24.04 or newer detected ✓"
+                
+                # Verify systemd-networkd is being used
+                if systemctl is-enabled systemd-networkd &> /dev/null; then
+                    log "systemd-networkd is enabled (Ubuntu 24.04 default) ✓"
+                else
+                    warn "systemd-networkd is not enabled - may need configuration"
+                fi
+            fi
+        fi
+    fi
+    
     # Check network connectivity
     if ping -c 1 8.8.8.8 &> /dev/null; then
         log "Network connectivity: OK"
@@ -753,13 +782,23 @@ verify_commands() {
     fi
     
     # Check required commands exist
-    local required_cmds=("ip" "lsblk" "mount")
+    local required_cmds=("ip" "lsblk" "mount" "lscpu" "dmidecode")
+    local optional_cmds=("netplan" "networkctl")
+    
     for cmd in "${required_cmds[@]}"; do
         if command -v "$cmd" &> /dev/null; then
             log "Command check: $cmd found"
         else
             error "Command check: $cmd NOT FOUND"
             ((failed++))
+        fi
+    done
+    
+    for cmd in "${optional_cmds[@]}"; do
+        if command -v "$cmd" &> /dev/null; then
+            log "Optional command: $cmd found"
+        else
+            info "Optional command: $cmd not found (may need installation)"
         fi
     done
     
@@ -791,6 +830,12 @@ configure_netplan() {
         return 1
     fi
     
+    # Check systemd-networkd is available (Ubuntu 24.04 Server default)
+    if ! systemctl is-enabled systemd-networkd &> /dev/null; then
+        warn "systemd-networkd is not enabled. Enabling it now..."
+        systemctl enable systemd-networkd
+    fi
+    
     # Display available interfaces
     log "Available network interfaces:"
     ip -br link show | grep -v lo
@@ -807,7 +852,7 @@ configure_netplan() {
         log "Backed up existing netplan config to $backup"
     fi
     
-    # Start building the netplan config
+    # Start building the netplan config (Ubuntu 24.04 uses networkd renderer)
     cat > "$netplan_config" << 'EOF'
 network:
   version: 2
@@ -818,7 +863,7 @@ EOF
     # Configure each interface
     for ((i=1; i<=num_interfaces; i++)); do
         echo ""
-        read -p "Interface $i name (e.g., eth0, ens33): " iface_name
+        read -p "Interface $i name (e.g., eth0, ens33, enp0s31f6): " iface_name
         read -p "Use DHCP for $iface_name? (y/n): " use_dhcp
         
         cat >> "$netplan_config" << EOF
@@ -828,6 +873,7 @@ EOF
         if [[ "$use_dhcp" =~ ^[Yy]$ ]]; then
             cat >> "$netplan_config" << EOF
       dhcp4: true
+      dhcp6: true
 EOF
         else
             read -p "Enter static IP (e.g., 192.168.1.100/24): " static_ip
@@ -837,8 +883,10 @@ EOF
             # Convert comma-separated DNS to array
             IFS=',' read -ra dns_array <<< "$dns_servers"
             
+            # Ubuntu 24.04 uses 'routes' instead of deprecated 'gateway4'
             cat >> "$netplan_config" << EOF
       dhcp4: false
+      dhcp6: false
       addresses:
         - $static_ip
       routes:
@@ -859,10 +907,37 @@ EOF
     cat "$netplan_config"
     
     echo ""
+    info "Validating netplan configuration..."
+    if netplan generate; then
+        log "Netplan configuration is valid ✓"
+    else
+        error "Netplan configuration has errors!"
+        return 1
+    fi
+    
+    echo ""
     read -p "Apply this configuration? (y/n): " apply_config
     
     if [[ "$apply_config" =~ ^[Yy]$ ]]; then
+        log "Applying netplan configuration..."
         netplan apply
+        
+        # Wait a moment for interfaces to come up
+        sleep 2
+        
+        # Verify systemd-networkd is running
+        if systemctl is-active systemd-networkd &> /dev/null; then
+            log "systemd-networkd is running ✓"
+        else
+            warn "systemd-networkd is not running - restarting..."
+            systemctl restart systemd-networkd
+        fi
+        
+        # Show interface status
+        echo ""
+        log "Network interface status:"
+        networkctl status
+        
         log "Netplan configuration applied successfully"
     else
         warn "Configuration saved but not applied. Run 'netplan apply' manually."
