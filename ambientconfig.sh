@@ -1210,7 +1210,7 @@ main_menu() {
     while true; do
         echo ""
         echo "======================================"
-        echo "Linux System Configuration Script"
+        echo "Linux System Configuration Script v0.1"
         echo "======================================"
         echo "Hardware Verification:"
         echo "  1. Check Network Interfaces"
