@@ -89,7 +89,6 @@ check_network_interfaces() {
     log "Checking network interfaces..."
 
     # Build interface list (exclude loopback) safely (no grep -v → no set -e pitfall)
-    # Get all network interfaces (excluding loopback)
     local interfaces
     interfaces="$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{split($2,a,"@"); print a[1]}')"
 
@@ -1058,7 +1057,12 @@ EOF
 
             echo ""
             echo "OS Release:"
-            cat /etc/*-release 2>&1
+            # tolerate missing files
+            if compgen -G "/etc/*-release" > /dev/null; then
+                cat /etc/*-release 2>&1
+            else
+                echo "No *-release files found."
+            fi
 
             echo ""
             echo "Uptime:"
@@ -1074,11 +1078,19 @@ EOF
 
             echo ""
             echo "PCI Devices:"
-            lspci
+            if command -v lspci >/dev/null 2>&1; then
+                lspci
+            else
+                echo "lspci not installed."
+            fi
 
             echo ""
             echo "USB Devices:"
-            lsusb 2>&1
+            if command -v lsusb >/dev/null 2>&1; then
+                lsusb 2>&1
+            else
+                echo "lsusb not installed."
+            fi
 
             echo ""
             echo "Network Configuration:"
@@ -1088,6 +1100,7 @@ EOF
             echo "Routing Table:"
             ip route
         } >> "$REPORT_FILE"
+
 
         if [[ -d /etc/netplan ]]; then
             echo "" >> "$REPORT_FILE"
