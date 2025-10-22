@@ -330,35 +330,43 @@ check_memory() {
     info "Total System Memory: $total_mem"
     echo ""
 
-    info "Memory modules installed:"
+    info "Installed memory modules:"
+    # Collect only populated memory modules (skip "No Module Installed")
     local mem_output
-    mem_output="$(dmidecode -t memory | grep -A 20 "Memory Device" | grep -E "Size:|Speed:|Type:|Locator:|Manufacturer:|Serial Number:|Part Number:" | while read -r line; do
-        if echo "$line" | grep -q "Size:"; then
-            echo ""
-            echo "$line"
-        elif echo "$line" | grep -q "No Module Installed"; then
-            :
-        else
-            echo "$line"
-        fi
-    done | grep -v "No Module Installed" -A 6 || true)"
-    echo "$mem_output"
+    mem_output="$(dmidecode -t memory | awk '
+        /^Memory Device$/ {block=""; skip=0}
+        /^$/ {if (block != "" && skip==0) print block; block=""; next}
+        /No Module Installed/ {skip=1}
+        /Size:|Speed:|Type:|Locator:|Manufacturer:|Serial Number:|Part Number:/ {
+            block = block $0 "\n"
+        }
+        END {if (block != "" && skip==0) print block}
+    ')"
 
-    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+    if [[ -n "$mem_output" ]]; then
+        echo "$mem_output"
+    else
+        warn "No populated memory modules detected!"
+    fi
+
+    # Capture to report (only populated modules)
+    if [[ "${REPORT_MODE:-false}" == "true" && -n "$mem_output" ]]; then
         echo "$mem_output" >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
         echo "Full dmidecode memory output:" >> "$REPORT_FILE"
         dmidecode -t memory >> "$REPORT_FILE" 2>&1
     fi
 
+    # Summary: count populated vs total
     local slot_count populated
     slot_count="$(dmidecode -t memory | grep -c "Memory Device" || true)"
-    populated="$(dmidecode -t memory | grep "Size:" | grep -v "No Module Installed" | wc -l || true)"
+    populated="$(echo "$mem_output" | grep -c "Size:" || true)"
     echo ""
     info "Memory slots: $populated populated out of $slot_count total"
 
     return 0
 }
+
 
 check_power_supplies() {
     report_section "POWER SUPPLY INFORMATION"
