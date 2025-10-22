@@ -3,8 +3,8 @@
 # Linux System Configuration Script
 # Functions: Hardware verification, Command checks, Netplan configuration, Volume formatting/mounting
 # Validated for: Ubuntu 24.04 LTS Server
-# 
-# Ubuntu 24.04 Server Compatibility Notes:
+#
+# Notes:
 # - Uses systemd-networkd as default network backend (not NetworkManager)
 # - Netplan 1.0+ with networkd renderer
 # - Uses 'routes' syntax instead of deprecated 'gateway4'
@@ -29,7 +29,7 @@ REPORT_DIR="/var/log/system-config-reports"
 log() {
     local msg="${GREEN}[INFO]${NC} $1"
     echo -e "$msg"
-    if $REPORT_MODE; then
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "[INFO] $1" >> "$REPORT_FILE"
     fi
 }
@@ -37,7 +37,7 @@ log() {
 error() {
     local msg="${RED}[ERROR]${NC} $1"
     echo -e "$msg"
-    if $REPORT_MODE; then
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "[ERROR] $1" >> "$REPORT_FILE"
     fi
 }
@@ -45,7 +45,7 @@ error() {
 warn() {
     local msg="${YELLOW}[WARN]${NC} $1"
     echo -e "$msg"
-    if $REPORT_MODE; then
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "[WARN] $1" >> "$REPORT_FILE"
     fi
 }
@@ -53,7 +53,7 @@ warn() {
 info() {
     local msg="${BLUE}[INFO]${NC} $1"
     echo -e "$msg"
-    if $REPORT_MODE; then
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "[INFO] $1" >> "$REPORT_FILE"
     fi
 }
@@ -61,19 +61,21 @@ info() {
 # Function to write section headers to report
 report_section() {
     local section="$1"
-    if $REPORT_MODE; then
-        echo "" >> "$REPORT_FILE"
-        echo "==========================================" >> "$REPORT_FILE"
-        echo "$section" >> "$REPORT_FILE"
-        echo "==========================================" >> "$REPORT_FILE"
-        echo "" >> "$REPORT_FILE"
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo ""
+            echo "=========================================="
+            echo "$section"
+            echo "=========================================="
+            echo ""
+        } >> "$REPORT_FILE"
     fi
 }
 
 # Function to capture command output to report
 capture_output() {
     local output="$1"
-    if $REPORT_MODE && [[ -n "$output" ]]; then
+    if [[ "${REPORT_MODE:-false}" == "true" && -n "$output" ]]; then
         echo "$output" >> "$REPORT_FILE"
     fi
 }
@@ -85,73 +87,84 @@ capture_output() {
 check_network_interfaces() {
     report_section "NETWORK INTERFACES CHECK"
     log "Checking network interfaces..."
-    
-    # Get all network interfaces (excluding loopback)
-    local interfaces=$(ip -o link show | grep -v "lo:" | awk -F': ' '{print $2}' | cut -d'@' -f1)
-    
+
+    # Build interface list (exclude loopback) safely (no grep -v → no set -e pitfall)
+    local interfaces
+    interfaces="$(ip -o link show 2>/dev/null | awk -F': ' '$2!="lo"{split($2,a,"@"); print a[1]}')"
+
     if [[ -z "$interfaces" ]]; then
         error "No network interfaces found!"
         return 1
     fi
-    
+
     local iface_count=0
     local up_count=0
     local down_count=0
-    
+
     echo ""
     info "Found Network Interfaces:"
     echo ""
-    
+
     while IFS= read -r iface; do
         [[ -z "$iface" ]] && continue
-        
+
         ((iface_count++))
-        
-        # Get interface details
-        local state=$(ip link show "$iface" 2>/dev/null | grep -oP 'state \K\w+' || echo "UNKNOWN")
-        local mac=$(ip link show "$iface" 2>/dev/null | grep -oP 'link/ether \K[0-9a-f:]+' || echo "N/A")
+
+        # Get interface details (no PCRE)
+        local state
+        state="$(ip -o link show "$iface" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="state"){print $(i+1); exit}}')"
+        [[ -z "$state" ]] && state="UNKNOWN"
+
+        local mac
+        mac="$(cat "/sys/class/net/$iface/address" 2>/dev/null || true)"
+        [[ -z "$mac" ]] && mac="N/A"
+
         local speed=""
         local duplex=""
         local driver=""
         local pci_addr=""
-        
-        # Get speed if interface is up
+
+        # Speed
         if [[ -f "/sys/class/net/$iface/speed" ]]; then
-            speed=$(cat "/sys/class/net/$iface/speed" 2>/dev/null || echo "N/A")
-            if [[ "$speed" != "N/A" && "$speed" != "-1" && "$speed" -gt 0 ]]; then
-                speed="${speed}Mbps"
-            else
+            local speed_raw
+            speed_raw="$(cat "/sys/class/net/$iface/speed" 2>/dev/null || true)"
+            if [[ "$speed_raw" =~ ^-?[0-9]+$ && "$speed_raw" -gt 0 ]]; then
+                speed="${speed_raw}Mbps"
+            elif [[ "$speed_raw" == "-1" ]]; then
                 speed="Unknown"
+            else
+                speed="N/A"
             fi
         else
             speed="N/A"
         fi
-        
-        # Get duplex
+
+        # Duplex
         if [[ -f "/sys/class/net/$iface/duplex" ]]; then
-            duplex=$(cat "/sys/class/net/$iface/duplex" 2>/dev/null || echo "N/A")
+            duplex="$(cat "/sys/class/net/$iface/duplex" 2>/dev/null || true)"
+            [[ -z "$duplex" ]] && duplex="N/A"
         else
             duplex="N/A"
         fi
-        
-        # Get driver info
-        if [[ -L "/sys/class/net/$iface/device/driver" ]]; then
-            driver=$(basename $(readlink "/sys/class/net/$iface/device/driver") 2>/dev/null || echo "Unknown")
+
+        # Driver/PCI
+        if [[ -L "/sys/class/net/$iface/device" ]]; then
+            pci_addr="$(basename "$(readlink "/sys/class/net/$iface/device")" 2>/dev/null || echo "N/A")"
+            if [[ -L "/sys/class/net/$iface/device/driver" ]]; then
+                driver="$(basename "$(readlink "/sys/class/net/$iface/device/driver")" 2>/dev/null || echo "Unknown")"
+            else
+                driver="Unknown"
+            fi
         else
             driver="Virtual"
-        fi
-        
-        # Get PCI address
-        if [[ -L "/sys/class/net/$iface/device" ]]; then
-            pci_addr=$(basename $(readlink "/sys/class/net/$iface/device") 2>/dev/null || echo "N/A")
-        else
             pci_addr="N/A"
         fi
-        
-        # Get IP addresses
-        local ipv4=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+/\d+' | head -1)
-        local ipv6=$(ip -6 addr show "$iface" 2>/dev/null | grep -oP 'inet6 \K[0-9a-f:]+/\d+' | grep -v "^fe80" | head -1)
-        
+
+        # IPs (no PCRE)
+        local ipv4 ipv6
+        ipv4="$(ip -4 -o addr show "$iface" 2>/dev/null | awk '$3=="inet"{print $4; exit}')"
+        ipv6="$(ip -6 -o addr show "$iface" 2>/dev/null | awk '$3=="inet6" && $4 !~ /^fe80/{print $4; exit}')"
+
         # Count up/down
         if [[ "$state" == "UP" ]]; then
             ((up_count++))
@@ -160,7 +173,8 @@ check_network_interfaces() {
             ((down_count++))
             warn "[$iface_count] $iface: $state"
         fi
-        
+
+        echo "  $iface"
         echo "    State:     $state"
         echo "    MAC:       $mac"
         echo "    Driver:    $driver"
@@ -178,9 +192,9 @@ check_network_interfaces() {
             echo "    IPv6:      $ipv6"
         fi
         echo ""
-        
+
         # Capture to report
-        if $REPORT_MODE; then
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
             {
                 echo "Interface: $iface"
                 echo "  State: $state"
@@ -195,37 +209,38 @@ check_network_interfaces() {
             } >> "$REPORT_FILE"
         fi
     done <<< "$interfaces"
-    
+
     # Summary
     info "Summary: $iface_count interface(s) found - $up_count UP, $down_count DOWN"
-    
-    # Show brief table view
+
+    # Quick Overview (avoid grep -v failure under set -e)
     echo ""
     info "Quick Overview:"
-    ip -br link show | grep -v "lo"
-    
+    ip -br link show | awk '$1 != "lo" {print}'
+
     # Show routing table
     echo ""
     info "Default Routes:"
     ip route show | grep default || echo "  No default route configured"
-    
+
     return 0
 }
 
 check_nvidia_gpu() {
     report_section "NVIDIA GPU CHECK"
     log "Checking NVIDIA GPU and drivers..."
-    
+
     if ! command -v nvidia-smi &> /dev/null; then
         error "nvidia-smi not found - NVIDIA drivers may not be installed"
         return 1
     fi
-    
+
     if nvidia-smi &> /dev/null; then
         log "NVIDIA driver loaded successfully"
         echo ""
-        local gpu_output=$(nvidia-smi --query-gpu=index,name,driver_version,memory.total,temperature.gpu,power.draw --format=csv,noheader)
-        echo "$gpu_output" | while IFS=, read idx name driver mem temp power; do
+        local gpu_output
+        gpu_output="$(nvidia-smi --query-gpu=index,name,driver_version,memory.total,temperature.gpu,power.draw --format=csv,noheader)"
+        echo "$gpu_output" | while IFS=, read -r idx name driver mem temp power; do
             info "GPU $idx: $name"
             info "  Driver: $driver"
             info "  Memory: $mem"
@@ -233,9 +248,8 @@ check_nvidia_gpu() {
             info "  Power: $power"
         done
         capture_output "$gpu_output"
-        
-        # Capture full nvidia-smi output for report
-        if $REPORT_MODE; then
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
             echo "" >> "$REPORT_FILE"
             echo "Full nvidia-smi output:" >> "$REPORT_FILE"
             nvidia-smi >> "$REPORT_FILE" 2>&1
@@ -251,15 +265,16 @@ check_nvidia_gpu() {
 check_cpu() {
     report_section "CPU INFORMATION"
     log "Checking CPU information..."
-    
-    local cpu_model=$(lscpu | grep "Model name" | cut -d: -f2 | xargs)
-    local cpu_cores=$(lscpu | grep "^CPU(s):" | cut -d: -f2 | xargs)
-    local cpu_threads=$(lscpu | grep "^Thread(s) per core:" | cut -d: -f2 | xargs)
-    local cores_per_socket=$(lscpu | grep "Core(s) per socket:" | cut -d: -f2 | xargs)
-    local sockets=$(lscpu | grep "Socket(s):" | cut -d: -f2 | xargs)
-    local cpu_mhz=$(lscpu | grep "CPU MHz:" | cut -d: -f2 | xargs)
-    local cpu_max_mhz=$(lscpu | grep "CPU max MHz:" | cut -d: -f2 | xargs)
-    
+
+    local cpu_model cpu_cores cpu_threads cores_per_socket sockets cpu_mhz cpu_max_mhz
+    cpu_model="$(lscpu | grep "Model name" | cut -d: -f2 | xargs)"
+    cpu_cores="$(lscpu | grep "^CPU(s):" | cut -d: -f2 | xargs)"
+    cpu_threads="$(lscpu | grep "^Thread(s) per core:" | cut -d: -f2 | xargs)"
+    cores_per_socket="$(lscpu | grep "Core(s) per socket:" | cut -d: -f2 | xargs)"
+    sockets="$(lscpu | grep "Socket(s):" | cut -d: -f2 | xargs)"
+    cpu_mhz="$(lscpu | grep "CPU MHz:" | cut -d: -f2 | xargs)"
+    cpu_max_mhz="$(lscpu | grep "CPU max MHz:" | cut -d: -f2 | xargs)"
+
     info "CPU Model: $cpu_model"
     info "Total Logical CPUs: $cpu_cores"
     info "Sockets: $sockets"
@@ -269,104 +284,106 @@ check_cpu() {
     if [[ -n "$cpu_max_mhz" ]]; then
         info "Max Speed: ${cpu_max_mhz} MHz"
     fi
-    
-    # Capture full lscpu output to report
-    if $REPORT_MODE; then
+
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "" >> "$REPORT_FILE"
         echo "Full lscpu output:" >> "$REPORT_FILE"
         lscpu >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
     fi
-    
-    # Check per-core frequencies
+
     info "Per-core current frequencies:"
     local freq_output=""
     for cpu in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
         if [[ -f "$cpu" ]]; then
-            local core=$(echo "$cpu" | grep -oP 'cpu\K[0-9]+')
-            local freq=$(cat "$cpu")
-            local freq_mhz=$((freq / 1000))
+            local core freq freq_mhz
+            core="${cpu%/cpufreq/scaling_cur_freq}"  # .../cpu7
+            core="${core##*/}"                       # cpu7
+            core="${core#cpu}"                       # 7
+            freq="$(cat "$cpu")"
+            freq_mhz=$((freq / 1000))
             echo "  CPU$core: ${freq_mhz} MHz"
             freq_output+="CPU$core: ${freq_mhz} MHz\n"
         fi
     done
     capture_output "$freq_output"
-    
+
     return 0
 }
 
 check_memory() {
     report_section "MEMORY CONFIGURATION"
     log "Checking memory configuration..."
-    
+
     if ! command -v dmidecode &> /dev/null; then
         warn "dmidecode not found - install it for detailed memory info"
         info "Basic memory information:"
         free -h
-        if $REPORT_MODE; then
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
             free -h >> "$REPORT_FILE"
         fi
         return 1
     fi
-    
-    local total_mem=$(free -h | grep "Mem:" | awk '{print $2}')
+
+    local total_mem
+    total_mem="$(free -h | awk '/^Mem:/ {print $2}')"
     info "Total System Memory: $total_mem"
     echo ""
-    
+
     info "Memory modules installed:"
-    local mem_output=$(dmidecode -t memory | grep -A 20 "Memory Device" | grep -E "Size:|Speed:|Type:|Locator:|Manufacturer:|Serial Number:|Part Number:" | while read line; do
+    local mem_output
+    mem_output="$(dmidecode -t memory | grep -A 20 "Memory Device" | grep -E "Size:|Speed:|Type:|Locator:|Manufacturer:|Serial Number:|Part Number:" | while read -r line; do
         if echo "$line" | grep -q "Size:"; then
             echo ""
             echo "$line"
         elif echo "$line" | grep -q "No Module Installed"; then
-            continue
+            :
         else
             echo "$line"
         fi
-    done | grep -v "No Module Installed" -A 6)
+    done | grep -v "No Module Installed" -A 6 || true)"
     echo "$mem_output"
-    
-    # Capture to report
-    if $REPORT_MODE; then
+
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         echo "$mem_output" >> "$REPORT_FILE"
         echo "" >> "$REPORT_FILE"
         echo "Full dmidecode memory output:" >> "$REPORT_FILE"
         dmidecode -t memory >> "$REPORT_FILE" 2>&1
     fi
-    
-    # Summary
-    local slot_count=$(dmidecode -t memory | grep -c "Memory Device")
-    local populated=$(dmidecode -t memory | grep "Size:" | grep -v "No Module Installed" | wc -l)
+
+    local slot_count populated
+    slot_count="$(dmidecode -t memory | grep -c "Memory Device" || true)"
+    populated="$(dmidecode -t memory | grep "Size:" | grep -v "No Module Installed" | wc -l || true)"
     echo ""
     info "Memory slots: $populated populated out of $slot_count total"
-    
+
     return 0
 }
 
 check_power_supplies() {
     report_section "POWER SUPPLY INFORMATION"
     log "Checking power supply information..."
-    
+
     local psu_info=""
     local found_psu=false
-    
+
     # Check via dmidecode type 39 (System Power Supply)
     if command -v dmidecode &> /dev/null; then
         info "PSU information from dmidecode:"
-        local dmi_output=$(dmidecode --type 39 2>/dev/null)
-        
+        local dmi_output
+        dmi_output="$(dmidecode --type 39 2>/dev/null || true)"
+
         if [[ -n "$dmi_output" ]] && ! echo "$dmi_output" | grep -q "No SMBIOS nor DMI entry point found"; then
-            # Parse and display PSU information
-            echo "$dmi_output" | grep -A 15 "System Power Supply" | while IFS= read -r line; do
+            # Parse and display PSU information (avoid subshell)
+            while IFS= read -r line; do
                 if echo "$line" | grep -qE "Location:|Name:|Manufacturer:|Serial Number:|Asset Tag:|Model Part Number:|Max Power Capacity:|Status:|Type:|Input Voltage Range Switching:"; then
                     echo "$line"
-                    psu_info+="$line\n"
+                    psu_info+="$line"$'\n'
                     found_psu=true
                 fi
-            done
-            
-            # Capture full output to report
-            if $REPORT_MODE; then
+            done < <(echo "$dmi_output" | grep -A 15 "System Power Supply" || true)
+
+            if [[ "${REPORT_MODE:-false}" == "true" ]]; then
                 echo "" >> "$REPORT_FILE"
                 echo "Full dmidecode type 39 output:" >> "$REPORT_FILE"
                 echo "$dmi_output" >> "$REPORT_FILE"
@@ -377,117 +394,118 @@ check_power_supplies() {
     else
         warn "dmidecode not found - cannot check PSU information"
     fi
-    
+
     echo ""
-    
+
     # Check via sysfs if available
     if [[ -d /sys/class/hwmon ]]; then
         info "Checking power sensors in sysfs:"
         local found_hwmon=false
         for hwmon in /sys/class/hwmon/hwmon*/name; do
             if [[ -f "$hwmon" ]]; then
-                local name=$(cat "$hwmon")
-                local dir=$(dirname "$hwmon")
-                
-                # Look for power inputs
+                local name dir
+                name="$(cat "$hwmon")"
+                dir="$(dirname "$hwmon")"
+
                 for power in "$dir"/power*_input; do
                     if [[ -f "$power" ]]; then
-                        local watts=$(cat "$power")
+                        local watts
+                        watts="$(cat "$power")"
                         watts=$((watts / 1000000))
                         local label_file="${power/input/label}"
                         local label="unknown"
                         if [[ -f "$label_file" ]]; then
-                            label=$(cat "$label_file")
+                            label="$(cat "$label_file")"
                         fi
                         info "  $name - $label: ${watts}W"
-                        psu_info+="$name - $label: ${watts}W\n"
+                        psu_info+="$name - $label: ${watts}W"$'\n'
                         found_hwmon=true
                     fi
                 done
             fi
         done
-        if ! $found_hwmon; then
+        if [[ "$found_hwmon" != true ]]; then
             info "  No power sensors found in sysfs"
         fi
     fi
-    
+
     capture_output "$psu_info"
-    
+
     echo ""
     read -p "Enter expected PSU wattages (space-separated, e.g., 750 750 for dual 750W): " expected_wattages
-    
+
     if [[ -n "$expected_wattages" ]]; then
         info "Expected PSU configuration:"
         for watt in $expected_wattages; do
             info "  ${watt}W PSU"
         done
-        if ! $found_psu; then
+        if [[ "$found_psu" != true ]]; then
             warn "Manual verification recommended - check physical labels or BMC interface"
         fi
     fi
-    
+
     return 0
 }
 
 check_raid_controller() {
     report_section "RAID CONTROLLER INFORMATION"
     log "Checking RAID controller configuration..."
-    
+
     local found_controller=false
     local raid_output=""
     local raid_warnings=0
-    
-    # Check for MegaRAID (LSI/Broadcom/Avago)
+
+    # MegaRAID (LSI/Broadcom/Avago)
     if command -v megacli &> /dev/null || command -v MegaCli64 &> /dev/null; then
-        local megacli_cmd=$(command -v megacli || command -v MegaCli64)
+        local megacli_cmd
+        megacli_cmd="$(command -v megacli || command -v MegaCli64)"
         found_controller=true
-        
+
         info "MegaRAID controller detected"
-        
-        # Get adapter info
-        local adapter_info=$($megacli_cmd -AdpAllInfo -aALL | grep -E "Product Name|Memory Size|ROC temperature")
+
+        local adapter_info
+        adapter_info="$($megacli_cmd -AdpAllInfo -aALL | grep -E "Product Name|Memory Size|ROC temperature" || true)"
         echo "$adapter_info"
         raid_output+="$adapter_info\n"
-        
+
         echo ""
         info "Checking BBU/Cache Vault status:"
-        local bbu_full=$($megacli_cmd -AdpBbuCmd -GetBbuStatus -aALL)
-        local bbu_info=$(echo "$bbu_full" | grep -E "Battery State|Charger Status|Temperature|Remaining Capacity|Voltage|Current")
+        local bbu_full bbu_info bbu_state
+        bbu_full="$($megacli_cmd -AdpBbuCmd -GetBbuStatus -aALL || true)"
+        bbu_info="$(echo "$bbu_full" | grep -E "Battery State|Charger Status|Temperature|Remaining Capacity|Voltage|Current" || true)"
         echo "$bbu_info"
         raid_output+="\nBBU Status:\n$bbu_info\n"
-        
-        # Check for BBU Optimal state
-        local bbu_state=$(echo "$bbu_full" | grep "Battery State:" | awk '{print $3}')
+
+        bbu_state="$(echo "$bbu_full" | awk -F': ' '/Battery State:/ {print $2; exit}')"
         if [[ "$bbu_state" == "Optimal" ]]; then
             log "BBU Status: Optimal ✓"
         else
-            error "BBU Status: $bbu_state - NOT OPTIMAL!"
+            error "BBU Status: ${bbu_state:-Unknown} - NOT OPTIMAL!"
             ((raid_warnings++))
-            raid_output+="\n[ERROR] BBU is not in Optimal state: $bbu_state\n"
+            raid_output+="\n[ERROR] BBU is not in Optimal state: ${bbu_state:-Unknown}\n"
         fi
-        
+
         echo ""
         info "Checking Virtual Drive cache settings:"
-        local vd_info=$($megacli_cmd -LDInfo -Lall -aALL)
-        
-        # Display full VD table
-        local vd_table=$($megacli_cmd -LDGetProp -Cache -LALL -aALL)
+        local vd_info vd_table
+        vd_info="$($megacli_cmd -LDInfo -Lall -aALL || true)"
+        vd_table="$($megacli_cmd -LDGetProp -Cache -LALL -aALL || true)"
         echo "$vd_table"
         raid_output+="\nVirtual Drive Info:\n$vd_info\n"
-        
-        # Parse each virtual drive for cache policy
+
         echo ""
         info "Analyzing cache policies:"
-        local ld_count=$($megacli_cmd -LDGetNum -aALL | grep "Number of Virtual Drives" | awk '{print $NF}')
-        
+        local ld_count
+        ld_count="$($megacli_cmd -LDGetNum -aALL | awk -F': ' '/Number of Virtual Drives/ {print $2}' || echo 0)"
+
         for ((ld=0; ld<ld_count; ld++)); do
-            local cache_policy=$($megacli_cmd -LDGetProp -Cache -L${ld} -aALL | grep "Current Cache Policy")
-            local vd_state=$($megacli_cmd -LDInfo -L${ld} -aALL | grep "State" | head -1 | awk '{print $NF}')
-            
+            local cache_policy vd_state
+            cache_policy="$($megacli_cmd -LDGetProp -Cache -L${ld} -aALL | grep "Current Cache Policy" || true)"
+            vd_state="$($megacli_cmd -LDInfo -L${ld} -aALL | awk -F': ' '/State/ {print $2; exit}' || echo "Unknown")"
+
             echo "  VD ${ld}: State=$vd_state"
-            echo "    $cache_policy"
-            
-            # Check for Optimal state
+            [[ -n "$cache_policy" ]] && echo "    $cache_policy"
+
             if [[ "$vd_state" == "Optimal" ]]; then
                 log "    VD ${ld} State: Optimal ✓"
             else
@@ -495,18 +513,15 @@ check_raid_controller() {
                 ((raid_warnings++))
                 raid_output+="\n[ERROR] VD ${ld} is not Optimal: $vd_state\n"
             fi
-            
-            # Check cache policy - look for WriteBack (RWTD is ideal)
+
             if echo "$cache_policy" | grep -q "WriteBack"; then
                 if echo "$cache_policy" | grep -q "ReadAheadNone"; then
-                    # RWBD - WriteBack with ReadAhead disabled (Battery Dependent mode)
                     warn "    VD ${ld} Cache: RWBD (WriteBack, Battery Dependent) - EXCEPTION!"
                     warn "    Cache may fall back to WriteThrough if BBU fails"
                     ((raid_warnings++))
                     raid_output+="\n[WARN] VD ${ld} Cache Policy: RWBD - Should be RWTD for optimal performance\n"
                 elif echo "$cache_policy" | grep -q "ReadAhead"; then
-                    # RWTD - WriteBack with ReadAhead (ideal)
-                    log "    VD ${ld} Cache: RWTD (WriteThrough, Read Ahead) ✓"
+                    log "    VD ${ld} Cache: RWTD (WriteBack, Read Ahead) ✓"
                 else
                     info "    VD ${ld} Cache: WriteBack enabled"
                 fi
@@ -516,56 +531,60 @@ check_raid_controller() {
                 raid_output+="\n[WARN] VD ${ld} Cache Policy: WriteThrough - Not optimal\n"
             fi
         done
-        
-        # Show summary table
+
         echo ""
         info "Virtual Drive Summary:"
-        $megacli_cmd -LDGetProp -DskCache -LALL -aALL
-        
-        if $REPORT_MODE; then
-            echo "" >> "$REPORT_FILE"
-            echo "Full MegaCLI output:" >> "$REPORT_FILE"
-            $megacli_cmd -AdpAllInfo -aALL >> "$REPORT_FILE" 2>&1
-            echo "" >> "$REPORT_FILE"
-            $megacli_cmd -AdpBbuCmd -GetBbuStatus -aALL >> "$REPORT_FILE" 2>&1
-            echo "" >> "$REPORT_FILE"
-            $megacli_cmd -LDInfo -Lall -aALL >> "$REPORT_FILE" 2>&1
+        $megacli_cmd -LDGetProp -DskCache -LALL -aALL || true
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+            {
+                echo "" 
+                echo "Full MegaCLI output:"
+                $megacli_cmd -AdpAllInfo -aALL
+                echo ""
+                $megacli_cmd -AdpBbuCmd -GetBbuStatus -aALL
+                echo ""
+                $megacli_cmd -LDInfo -Lall -aALL
+            } >> "$REPORT_FILE" 2>&1
         fi
-        
-    # Check for StorCLI (newer LSI/Broadcom)
+
+    # StorCLI
     elif command -v storcli &> /dev/null || command -v storcli64 &> /dev/null; then
-        local storcli_cmd=$(command -v storcli || command -v storcli64)
+        local storcli_cmd
+        storcli_cmd="$(command -v storcli || command -v storcli64)"
         found_controller=true
-        
+
         info "RAID controller detected (StorCLI)"
-        
-        local controller_info=$($storcli_cmd /c0 show | grep -A 10 "Product Name\|Memory Size\|ROC temperature")
+
+        local controller_info
+        controller_info="$($storcli_cmd /c0 show | grep -A 10 -E "Product Name|Memory Size|ROC temperature" || true)"
         echo "$controller_info"
         raid_output+="$controller_info\n"
-        
+
         echo ""
         info "Checking BBU/CV status:"
-        local bbu_cv_info=$($storcli_cmd /c0/cv show all 2>/dev/null || $storcli_cmd /c0/bbu show all 2>/dev/null)
+        local bbu_cv_info
+        bbu_cv_info="$($storcli_cmd /c0/cv show all 2>/dev/null || $storcli_cmd /c0/bbu show all 2>/dev/null || true)"
         echo "$bbu_cv_info"
         raid_output+="\nBBU/CV Status:\n$bbu_cv_info\n"
-        
-        # Check BBU/CV state
+
         if echo "$bbu_cv_info" | grep -q "Optimal"; then
             log "BBU/CV Status: Optimal ✓"
         else
-            local state=$(echo "$bbu_cv_info" | grep -i "state" | head -1)
-            error "BBU/CV Status: $state - NOT OPTIMAL!"
+            local state
+            state="$(echo "$bbu_cv_info" | grep -i "state" | head -1 || true)"
+            error "BBU/CV Status: ${state:-Unknown} - NOT OPTIMAL!"
             ((raid_warnings++))
             raid_output+="\n[ERROR] BBU/CV is not in Optimal state\n"
         fi
-        
+
         echo ""
         info "Checking virtual drive cache settings:"
-        local vd_cache=$($storcli_cmd /c0/vall show all)
-        echo "$vd_cache" | grep -i "cache\|state"
+        local vd_cache
+        vd_cache="$($storcli_cmd /c0/vall show all || true)"
+        echo "$vd_cache" | grep -i "cache\|state" || true
         raid_output+="\nVD Cache:\n$vd_cache\n"
-        
-        # Check for cache policies
+
         if echo "$vd_cache" | grep -qi "WB"; then
             if echo "$vd_cache" | grep -qi "RWBD\|WriteBack.*NR"; then
                 warn "Cache Policy: RWBD detected - EXCEPTION!"
@@ -578,90 +597,92 @@ check_raid_controller() {
             warn "Cache Policy: WriteThrough mode detected"
             ((raid_warnings++))
         fi
-        
-        if $REPORT_MODE; then
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
             echo "" >> "$REPORT_FILE"
             echo "Full StorCLI output:" >> "$REPORT_FILE"
-            $storcli_cmd /c0 show all >> "$REPORT_FILE" 2>&1
+            $storcli_cmd /c0 show all >> "$REPORT_FILE" 2>&1 || true
         fi
-        
-    # Check for HP/HPE Smart Array
+
+    # HP/HPE Smart Array
     elif command -v hpacucli &> /dev/null || command -v ssacli &> /dev/null; then
-        local hpcli=$(command -v ssacli || command -v hpacucli)
+        local hpcli
+        hpcli="$(command -v ssacli || command -v hpacucli)"
         found_controller=true
-        
+
         info "HP/HPE Smart Array controller detected"
-        
-        local hp_config=$($hpcli ctrl all show config)
+
+        local hp_config
+        hp_config="$($hpcli ctrl all show config || true)"
         echo "$hp_config"
         raid_output+="$hp_config\n"
-        
+
         echo ""
         info "Checking cache status:"
-        local hp_cache=$($hpcli ctrl all show detail | grep -i cache)
+        local hp_cache
+        hp_cache="$($hpcli ctrl all show detail | grep -i cache || true)"
         echo "$hp_cache"
         raid_output+="\nCache Status:\n$hp_cache\n"
-        
-        # Check array status
+
         if echo "$hp_config" | grep -q "OK"; then
             log "Array Status: OK ✓"
         else
             warn "Array Status: Check output above"
             ((raid_warnings++))
         fi
-        
-        # Check cache ratio
+
         if echo "$hp_cache" | grep -q "Disabled"; then
             warn "Cache appears to be disabled"
             ((raid_warnings++))
         fi
-        
-        if $REPORT_MODE; then
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
             echo "" >> "$REPORT_FILE"
             echo "Full HP Smart Array output:" >> "$REPORT_FILE"
-            $hpcli ctrl all show config detail >> "$REPORT_FILE" 2>&1
+            $hpcli ctrl all show config detail >> "$REPORT_FILE" 2>&1 || true
         fi
-        
-    # Check for Adaptec
+
+    # Adaptec
     elif command -v arcconf &> /dev/null; then
         found_controller=true
-        
+
         info "Adaptec RAID controller detected"
-        
-        local adaptec_info=$(arcconf getconfig 1)
+
+        local adaptec_info
+        adaptec_info="$(arcconf getconfig 1 || true)"
         echo "$adaptec_info"
         raid_output+="$adaptec_info\n"
-        
+
         echo ""
         info "Checking battery backup:"
-        local adaptec_bbu=$(arcconf getconfig 1 | grep -A 5 -i battery)
+        local adaptec_bbu
+        adaptec_bbu="$(arcconf getconfig 1 | grep -A 5 -i battery || true)"
         echo "$adaptec_bbu"
         raid_output+="\nBattery:\n$adaptec_bbu\n"
-        
-        # Check battery status
+
         if echo "$adaptec_bbu" | grep -qi "optimal\|ok"; then
             log "Battery Status: OK ✓"
         else
             warn "Battery Status: Check output above"
             ((raid_warnings++))
         fi
-        
-        if $REPORT_MODE; then
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
             echo "" >> "$REPORT_FILE"
             echo "Full Adaptec output:" >> "$REPORT_FILE"
-            arcconf getconfig 1 >> "$REPORT_FILE" 2>&1
+            arcconf getconfig 1 >> "$REPORT_FILE" 2>&1 || true
         fi
-        
+
     else
         warn "No supported RAID controller tools found"
         warn "Install: megacli/storcli (LSI/Broadcom), ssacli (HP), or arcconf (Adaptec)"
     fi
-    
+
     capture_output "$raid_output"
-    
-    if ! $found_controller; then
-        # Check if any RAID controllers exist in lspci
-        local lspci_raid=$(lspci | grep -i raid)
+
+    if [[ "$found_controller" != true ]]; then
+        local lspci_raid
+        lspci_raid="$(lspci | grep -i raid || true)"
         if [[ -n "$lspci_raid" ]]; then
             info "RAID controller(s) found in system:"
             echo "$lspci_raid"
@@ -672,54 +693,53 @@ check_raid_controller() {
         fi
         return 1
     fi
-    
-    # Summary
+
     echo ""
     if [[ $raid_warnings -eq 0 ]]; then
         log "RAID configuration check: All optimal ✓"
     else
         error "RAID configuration check: $raid_warnings warning(s) found!"
     fi
-    
+
     return $raid_warnings
 }
 
 run_all_hardware_checks() {
     log "Running comprehensive hardware verification..."
     echo ""
-    
+
     local total_checks=0
     local failed_checks=0
-    
+
     echo "=========================================="
     ((total_checks++))
     check_network_interfaces || ((failed_checks++))
-    
+
     echo ""
     echo "=========================================="
     ((total_checks++))
     check_nvidia_gpu || ((failed_checks++))
-    
+
     echo ""
     echo "=========================================="
     ((total_checks++))
     check_cpu || ((failed_checks++))
-    
+
     echo ""
     echo "=========================================="
     ((total_checks++))
     check_memory || ((failed_checks++))
-    
+
     echo ""
     echo "=========================================="
     ((total_checks++))
     check_power_supplies || ((failed_checks++))
-    
+
     echo ""
     echo "=========================================="
     ((total_checks++))
     check_raid_controller || ((failed_checks++))
-    
+
     echo ""
     echo "=========================================="
     if [[ $failed_checks -eq 0 ]]; then
@@ -727,7 +747,7 @@ run_all_hardware_checks() {
     else
         warn "$failed_checks out of $total_checks hardware checks had issues"
     fi
-    
+
     return $failed_checks
 }
 
@@ -736,9 +756,9 @@ run_all_hardware_checks() {
 # ============================================
 verify_commands() {
     log "Starting basic system verification..."
-    
+
     local failed=0
-    
+
     # Check if system is Linux
     if [[ "$(uname -s)" != "Linux" ]]; then
         error "This script requires Linux"
@@ -746,19 +766,19 @@ verify_commands() {
     else
         log "OS check passed: Linux"
     fi
-    
+
     # Check Ubuntu version
     if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
         source /etc/os-release
         info "Distribution: $NAME $VERSION"
-        
-        # Check if Ubuntu 24.04 or newer
+
         if [[ "$ID" == "ubuntu" ]]; then
-            local version_number=$(echo "$VERSION_ID" | cut -d. -f1)
+            local version_number
+            version_number="$(echo "$VERSION_ID" | cut -d. -f1)"
             if [[ $version_number -ge 24 ]]; then
                 log "Ubuntu 24.04 or newer detected ✓"
-                
-                # Verify systemd-networkd is being used
+
                 if systemctl is-enabled systemd-networkd &> /dev/null; then
                     log "systemd-networkd is enabled (Ubuntu 24.04 default) ✓"
                 else
@@ -767,7 +787,7 @@ verify_commands() {
             fi
         fi
     fi
-    
+
     # Check network connectivity
     if ping -c 1 8.8.8.8 &> /dev/null; then
         log "Network connectivity: OK"
@@ -775,20 +795,21 @@ verify_commands() {
         warn "Network connectivity: FAILED"
         ((failed++))
     fi
-    
+
     # Check disk space (warn if root partition < 10% free)
-    local root_usage=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+    local root_usage
+    root_usage="$(df / | tail -1 | awk '{print $5}' | sed 's/%//')"
     if [[ $root_usage -lt 90 ]]; then
         log "Disk space: OK (${root_usage}% used)"
     else
         warn "Disk space: LOW (${root_usage}% used)"
         ((failed++))
     fi
-    
+
     # Check required commands exist
     local required_cmds=("ip" "lsblk" "mount" "lscpu" "dmidecode")
     local optional_cmds=("netplan" "networkctl")
-    
+
     for cmd in "${required_cmds[@]}"; do
         if command -v "$cmd" &> /dev/null; then
             log "Command check: $cmd found"
@@ -797,7 +818,7 @@ verify_commands() {
             ((failed++))
         fi
     done
-    
+
     for cmd in "${optional_cmds[@]}"; do
         if command -v "$cmd" &> /dev/null; then
             log "Optional command: $cmd found"
@@ -805,7 +826,7 @@ verify_commands() {
             info "Optional command: $cmd not found (may need installation)"
         fi
     done
-    
+
     # Check if running as root
     if [[ $EUID -eq 0 ]]; then
         log "Permission check: Running as root"
@@ -813,7 +834,7 @@ verify_commands() {
         error "Permission check: Must run as root"
         ((failed++))
     fi
-    
+
     if [[ $failed -gt 0 ]]; then
         error "$failed check(s) failed"
         return 1
@@ -828,34 +849,34 @@ verify_commands() {
 # ============================================
 configure_netplan() {
     log "Starting Netplan configuration..."
-    
+
     if ! command -v netplan &> /dev/null; then
         error "netplan not found - is this a system using netplan?"
         return 1
     fi
-    
+
     # Check systemd-networkd is available (Ubuntu 24.04 Server default)
     if ! systemctl is-enabled systemd-networkd &> /dev/null; then
         warn "systemd-networkd is not enabled. Enabling it now..."
         systemctl enable systemd-networkd
     fi
-    
+
     # Display available interfaces
     log "Available network interfaces:"
-    ip -br link show | grep -v lo
-    
+    ip -br link show | awk '$1 != "lo" {print}'
+
     echo ""
     read -p "Enter number of interfaces to configure: " num_interfaces
-    
+
     local netplan_config="/etc/netplan/01-netcfg.yaml"
     local backup="/etc/netplan/01-netcfg.yaml.backup.$(date +%s)"
-    
+
     # Backup existing config if it exists
     if [[ -f "$netplan_config" ]]; then
         cp "$netplan_config" "$backup"
         log "Backed up existing netplan config to $backup"
     fi
-    
+
     # Start building the netplan config (Ubuntu 24.04 uses networkd renderer)
     cat > "$netplan_config" << 'EOF'
 network:
@@ -863,17 +884,17 @@ network:
   renderer: networkd
   ethernets:
 EOF
-    
+
     # Configure each interface
     for ((i=1; i<=num_interfaces; i++)); do
         echo ""
         read -p "Interface $i name (e.g., eth0, ens33, enp0s31f6): " iface_name
         read -p "Use DHCP for $iface_name? (y/n): " use_dhcp
-        
+
         cat >> "$netplan_config" << EOF
     $iface_name:
 EOF
-        
+
         if [[ "$use_dhcp" =~ ^[Yy]$ ]]; then
             cat >> "$netplan_config" << EOF
       dhcp4: true
@@ -883,11 +904,9 @@ EOF
             read -p "Enter static IP (e.g., 192.168.1.100/24): " static_ip
             read -p "Enter gateway IP (e.g., 192.168.1.1): " gateway_ip
             read -p "Enter DNS servers (comma-separated, e.g., 8.8.8.8,8.8.4.4): " dns_servers
-            
-            # Convert comma-separated DNS to array
+
             IFS=',' read -ra dns_array <<< "$dns_servers"
-            
-            # Ubuntu 24.04 uses 'routes' instead of deprecated 'gateway4'
+
             cat >> "$netplan_config" << EOF
       dhcp4: false
       dhcp6: false
@@ -901,15 +920,15 @@ EOF
 EOF
             for dns in "${dns_array[@]}"; do
                 cat >> "$netplan_config" << EOF
-          - $(echo $dns | xargs)
+          - $(echo "$dns" | xargs)
 EOF
             done
         fi
     done
-    
+
     log "Generated netplan configuration:"
     cat "$netplan_config"
-    
+
     echo ""
     info "Validating netplan configuration..."
     if netplan generate; then
@@ -918,30 +937,27 @@ EOF
         error "Netplan configuration has errors!"
         return 1
     fi
-    
+
     echo ""
     read -p "Apply this configuration? (y/n): " apply_config
-    
+
     if [[ "$apply_config" =~ ^[Yy]$ ]]; then
         log "Applying netplan configuration..."
         netplan apply
-        
-        # Wait a moment for interfaces to come up
+
         sleep 2
-        
-        # Verify systemd-networkd is running
+
         if systemctl is-active systemd-networkd &> /dev/null; then
             log "systemd-networkd is running ✓"
         else
             warn "systemd-networkd is not running - restarting..."
             systemctl restart systemd-networkd
         fi
-        
-        # Show interface status
+
         echo ""
         log "Network interface status:"
         networkctl status
-        
+
         log "Netplan configuration applied successfully"
     else
         warn "Configuration saved but not applied. Run 'netplan apply' manually."
@@ -953,50 +969,51 @@ EOF
 # ============================================
 format_and_mount() {
     log "Starting volume configuration..."
-    
+
     # Display available block devices
     log "Available block devices:"
     lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE
-    
+
     echo ""
     warn "WARNING: Formatting will destroy all data on the selected device!"
     read -p "Enter device to format (e.g., sdb, nvme0n1): " device_name
-    
+
     # Add /dev/ prefix if not present
+    local device_path
     if [[ ! "$device_name" =~ ^/dev/ ]]; then
         device_path="/dev/$device_name"
     else
         device_path="$device_name"
     fi
-    
+
     # Verify device exists
     if [[ ! -b "$device_path" ]]; then
         error "Device $device_path does not exist"
         return 1
     fi
-    
+
     # Check if device is mounted
     if mount | grep -q "^$device_path"; then
         error "Device $device_path is currently mounted. Unmount it first."
         return 1
     fi
-    
+
     read -p "Enter filesystem type (ext4/xfs/btrfs) [default: ext4]: " fs_type
     fs_type=${fs_type:-ext4}
-    
+
     read -p "Enter mount point (e.g., /mnt/data): " mount_point
-    
+
     read -p "Enter label for filesystem [optional]: " fs_label
-    
+
     echo ""
     warn "FINAL WARNING: About to format $device_path as $fs_type"
     read -p "Type 'YES' to continue: " confirm
-    
+
     if [[ "$confirm" != "YES" ]]; then
         warn "Operation cancelled"
         return 1
     fi
-    
+
     # Format the device
     log "Formatting $device_path as $fs_type..."
     case "$fs_type" in
@@ -1026,34 +1043,35 @@ format_and_mount() {
             return 1
             ;;
     esac
-    
+
     # Create mount point
     if [[ ! -d "$mount_point" ]]; then
         mkdir -p "$mount_point"
         log "Created mount point: $mount_point"
     fi
-    
+
     # Get UUID
-    local uuid=$(blkid -s UUID -o value "$device_path")
+    local uuid
+    uuid="$(blkid -s UUID -o value "$device_path")"
     log "Device UUID: $uuid"
-    
+
     # Mount the device
     mount "$device_path" "$mount_point"
     log "Mounted $device_path to $mount_point"
-    
+
     # Backup fstab
     cp /etc/fstab /etc/fstab.backup.$(date +%s)
-    
+
     # Add to fstab
     read -p "Add to /etc/fstab for automatic mounting? (y/n): " add_fstab
-    
+
     if [[ "$add_fstab" =~ ^[Yy]$ ]]; then
         read -p "Enter mount options [default: defaults]: " mount_opts
         mount_opts=${mount_opts:-defaults}
-        
+
         echo "UUID=$uuid $mount_point $fs_type $mount_opts 0 2" >> /etc/fstab
         log "Added entry to /etc/fstab"
-        
+
         # Verify fstab
         if mount -a; then
             log "fstab verification successful"
@@ -1061,7 +1079,7 @@ format_and_mount() {
             error "fstab verification failed - check /etc/fstab"
         fi
     fi
-    
+
     log "Volume configuration complete!"
 }
 
@@ -1070,16 +1088,15 @@ format_and_mount() {
 # ============================================
 
 initialize_report() {
-    local hostname=$(hostname)
-    local timestamp=$(date +"%Y%m%d_%H%M%S")
-    
-    # Create report directory if it doesn't exist
+    local hostname timestamp
+    hostname="$(hostname)"
+    timestamp="$(date +"%Y%m%d_%H%M%S")"
+
     mkdir -p "$REPORT_DIR"
-    
+
     REPORT_FILE="$REPORT_DIR/system-config-report_${hostname}_${timestamp}.txt"
     REPORT_MODE=true
-    
-    # Write report header
+
     cat > "$REPORT_FILE" << EOF
 ==========================================
 SYSTEM CONFIGURATION REPORT
@@ -1090,57 +1107,57 @@ Report Generated By: $(whoami)
 ==========================================
 
 EOF
-    
+
     log "Report initialized: $REPORT_FILE"
 }
 
 finalize_report() {
-    if $REPORT_MODE; then
-        # Add system information summary at the end
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
         cat >> "$REPORT_FILE" << EOF
 
 ==========================================
 ADDITIONAL SYSTEM INFORMATION
 ==========================================
 EOF
-        
-        echo "" >> "$REPORT_FILE"
-        echo "Kernel Version:" >> "$REPORT_FILE"
-        uname -a >> "$REPORT_FILE"
-        
-        echo "" >> "$REPORT_FILE"
-        echo "OS Release:" >> "$REPORT_FILE"
-        cat /etc/*-release >> "$REPORT_FILE" 2>&1
-        
-        echo "" >> "$REPORT_FILE"
-        echo "Uptime:" >> "$REPORT_FILE"
-        uptime >> "$REPORT_FILE"
-        
-        echo "" >> "$REPORT_FILE"
-        echo "Disk Usage:" >> "$REPORT_FILE"
-        df -h >> "$REPORT_FILE"
-        
-        echo "" >> "$REPORT_FILE"
-        echo "Block Devices:" >> "$REPORT_FILE"
-        lsblk >> "$REPORT_FILE"
-        
-        echo "" >> "$REPORT_FILE"
-        echo "PCI Devices:" >> "$REPORT_FILE"
-        lspci >> "$REPORT_FILE"
-        
-        echo "" >> "$REPORT_FILE"
-        echo "USB Devices:" >> "$REPORT_FILE"
-        lsusb >> "$REPORT_FILE" 2>&1
-        
-        echo "" >> "$REPORT_FILE"
-        echo "Network Configuration:" >> "$REPORT_FILE"
-        ip addr >> "$REPORT_FILE"
-        
-        echo "" >> "$REPORT_FILE"
-        echo "Routing Table:" >> "$REPORT_FILE"
-        ip route >> "$REPORT_FILE"
-        
-        # Add current netplan config if it exists
+
+        {
+            echo ""
+            echo "Kernel Version:"
+            uname -a
+
+            echo ""
+            echo "OS Release:"
+            cat /etc/*-release 2>&1
+
+            echo ""
+            echo "Uptime:"
+            uptime
+
+            echo ""
+            echo "Disk Usage:"
+            df -h
+
+            echo ""
+            echo "Block Devices:"
+            lsblk
+
+            echo ""
+            echo "PCI Devices:"
+            lspci
+
+            echo ""
+            echo "USB Devices:"
+            lsusb 2>&1
+
+            echo ""
+            echo "Network Configuration:"
+            ip addr
+
+            echo ""
+            echo "Routing Table:"
+            ip route
+        } >> "$REPORT_FILE"
+
         if [[ -d /etc/netplan ]]; then
             echo "" >> "$REPORT_FILE"
             echo "Current Netplan Configuration:" >> "$REPORT_FILE"
@@ -1152,33 +1169,32 @@ EOF
                 fi
             done
         fi
-        
-        # Add fstab
+
         echo "" >> "$REPORT_FILE"
         echo "Current /etc/fstab:" >> "$REPORT_FILE"
         cat /etc/fstab >> "$REPORT_FILE"
-        
+
         cat >> "$REPORT_FILE" << EOF
 
 ==========================================
 END OF REPORT
 ==========================================
 EOF
-        
+
         log "Report finalized: $REPORT_FILE"
         log "Report size: $(du -h "$REPORT_FILE" | cut -f1)"
-        
-        # Create a compressed archive
-        local archive="${REPORT_FILE%.txt}.tar.gz"
+
+        local archive
+        archive="${REPORT_FILE%.txt}.tar.gz"
         tar -czf "$archive" -C "$(dirname "$REPORT_FILE")" "$(basename "$REPORT_FILE")"
-        
+
         if [[ -f "$archive" ]]; then
             log "Compressed archive created: $archive"
             log "Archive size: $(du -h "$archive" | cut -f1)"
         fi
-        
+
         REPORT_MODE=false
-        
+
         echo ""
         info "Report and archive available at:"
         info "  Text: $REPORT_FILE"
@@ -1189,20 +1205,18 @@ EOF
 generate_full_report() {
     log "Starting full system report generation..."
     echo ""
-    
+
     initialize_report
-    
-    # Run all hardware checks
+
     run_all_hardware_checks
-    
-    # Add system verification
+
     echo ""
     echo "=========================================="
     report_section "BASIC SYSTEM VERIFICATION"
     verify_commands
-    
+
     finalize_report
-    
+
     echo ""
     log "Full system report generation complete!"
 }
@@ -1238,7 +1252,7 @@ main_menu() {
         echo "  14. Exit"
         echo ""
         read -p "Select an option: " choice
-        
+
         case $choice in
             1) check_network_interfaces ;;
             2) check_nvidia_gpu ;;
@@ -1251,7 +1265,7 @@ main_menu() {
             9) configure_netplan ;;
             10) format_and_mount ;;
             11) generate_full_report ;;
-            12) 
+            12)
                 if [[ -d "$REPORT_DIR" ]]; then
                     log "Recent reports in $REPORT_DIR:"
                     ls -lth "$REPORT_DIR" | head -20
@@ -1264,11 +1278,11 @@ main_menu() {
                 if [[ "$gen_report" =~ ^[Yy]$ ]]; then
                     initialize_report
                 fi
-                
+
                 run_all_hardware_checks
                 echo ""
                 verify_commands && configure_netplan && format_and_mount
-                
+
                 if [[ "$gen_report" =~ ^[Yy]$ ]]; then
                     finalize_report
                 fi
@@ -1281,7 +1295,7 @@ main_menu() {
                 error "Invalid option"
                 ;;
         esac
-        
+
         echo ""
         read -p "Press Enter to continue..."
     done
