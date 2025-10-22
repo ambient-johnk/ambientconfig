@@ -1161,17 +1161,19 @@ main_menu() {
         echo "======================================"
         echo "Linux System Configuration Script v0.2"
         echo "======================================"
+        echo "System Verification:"
+        echo "  1. Verify Basic System Commands"
+        echo ""
         echo "Hardware Verification:"
-        echo "  1. Check Network Interfaces"
-        echo "  2. Check NVIDIA GPU & Drivers"
-        echo "  3. Check CPU Info"
-        echo "  4. Check Memory Modules"
-        echo "  5. Check Power Supplies"
-        echo "  6. Check RAID Controller"
-        echo "  7. Run ALL Hardware Checks"
+        echo "  2. Check Network Interfaces"
+        echo "  3. Check NVIDIA GPU & Drivers"
+        echo "  4. Check CPU Info"
+        echo "  5. Check Memory Modules"
+        echo "  6. Check Power Supplies"
+        echo "  7. Check RAID Controller"
+        echo "  8. Run ALL Hardware Checks"
         echo ""
         echo "System Configuration:"
-        echo "  8. Verify Basic System Commands"
         echo "  9. Configure Netplan"
         echo "  10. Format and Mount Volume"
         echo ""
@@ -1185,14 +1187,14 @@ main_menu() {
         read -p "Select an option: " choice
 
         case $choice in
-            1) check_network_interfaces || true ;;
-            2) check_nvidia_gpu ;;
-            3) check_cpu ;;
-            4) check_memory ;;
-            5) check_power_supplies ;;
-            6) check_raid_controller ;;
-            7) run_all_hardware_checks || true ;;
-            8) verify_commands ;;
+            1) verify_commands || true ;;
+            2) check_network_interfaces || true ;;
+            3) check_nvidia_gpu || true ;;
+            4) check_cpu || true ;;
+            5) check_memory || true ;;
+            6) check_power_supplies || true ;;
+            7) check_raid_controller || true ;;
+            8) run_all_hardware_checks || true ;;
             9) configure_netplan ;;
             10) format_and_mount ;;
             11) generate_full_report ;;
@@ -1210,9 +1212,12 @@ main_menu() {
                     initialize_report
                 fi
 
+                # Run verification first, then hardware checks
+                verify_commands || true
+                echo ""
                 run_all_hardware_checks || true
                 echo ""
-                verify_commands && configure_netplan && format_and_mount
+                configure_netplan && format_and_mount
 
                 if [[ "$gen_report" =~ ^[Yy]$ ]]; then
                     finalize_report
@@ -1231,6 +1236,7 @@ main_menu() {
         read -p "Press Enter to continue..."
     done
 }
+
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
