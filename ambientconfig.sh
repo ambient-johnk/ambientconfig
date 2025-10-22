@@ -78,38 +78,126 @@ check_network_interfaces() {
     report_section "NETWORK INTERFACES CHECK"
     log "Checking network interfaces..."
     
-    # Expected interfaces (modify as needed)
-    read -p "Enter expected interface names (space-separated, e.g., eth0 eth1 ens33): " expected_ifaces
+    # Get all network interfaces (excluding loopback)
+    local interfaces=$(ip -o link show | grep -v "lo:" | awk -F': ' '{print $2}' | cut -d'@' -f1)
     
-    local failed=0
-    for iface in $expected_ifaces; do
-        if ip link show "$iface" &> /dev/null; then
-            local state=$(ip link show "$iface" | grep -oP 'state \K\w+')
-            local speed=""
-            if [[ -f "/sys/class/net/$iface/speed" ]]; then
-                speed=$(cat "/sys/class/net/$iface/speed" 2>/dev/null || echo "N/A")
-                if [[ "$speed" != "N/A" && "$speed" -gt 0 ]]; then
-                    speed=" (${speed}Mbps)"
-                else
-                    speed=""
-                fi
+    if [[ -z "$interfaces" ]]; then
+        error "No network interfaces found!"
+        return 1
+    fi
+    
+    local iface_count=0
+    local up_count=0
+    local down_count=0
+    
+    echo ""
+    info "Found Network Interfaces:"
+    echo ""
+    
+    for iface in $interfaces; do
+        ((iface_count++))
+        
+        # Get interface details
+        local state=$(ip link show "$iface" | grep -oP 'state \K\w+')
+        local mac=$(ip link show "$iface" | grep -oP 'link/ether \K[0-9a-f:]+')
+        local speed=""
+        local duplex=""
+        local driver=""
+        local pci_addr=""
+        
+        # Get speed if interface is up
+        if [[ -f "/sys/class/net/$iface/speed" ]]; then
+            speed=$(cat "/sys/class/net/$iface/speed" 2>/dev/null || echo "N/A")
+            if [[ "$speed" != "N/A" && "$speed" -gt 0 ]]; then
+                speed="${speed}Mbps"
+            else
+                speed="Unknown"
             fi
-            log "Interface $iface: EXISTS - State: $state$speed"
         else
-            error "Interface $iface: NOT FOUND"
-            ((failed++))
+            speed="N/A"
+        fi
+        
+        # Get duplex
+        if [[ -f "/sys/class/net/$iface/duplex" ]]; then
+            duplex=$(cat "/sys/class/net/$iface/duplex" 2>/dev/null || echo "N/A")
+        else
+            duplex="N/A"
+        fi
+        
+        # Get driver info
+        if [[ -L "/sys/class/net/$iface/device/driver" ]]; then
+            driver=$(basename $(readlink "/sys/class/net/$iface/device/driver") 2>/dev/null || echo "Unknown")
+        else
+            driver="Virtual"
+        fi
+        
+        # Get PCI address
+        if [[ -L "/sys/class/net/$iface/device" ]]; then
+            pci_addr=$(basename $(readlink "/sys/class/net/$iface/device") 2>/dev/null || echo "N/A")
+        else
+            pci_addr="N/A"
+        fi
+        
+        # Get IP addresses
+        local ipv4=$(ip -4 addr show "$iface" | grep -oP 'inet \K[\d.]+/\d+' | head -1)
+        local ipv6=$(ip -6 addr show "$iface" | grep -oP 'inet6 \K[0-9a-f:]+/\d+' | grep -v "^fe80" | head -1)
+        
+        # Count up/down
+        if [[ "$state" == "UP" ]]; then
+            ((up_count++))
+            log "[$iface_count] $iface: $state"
+        else
+            ((down_count++))
+            warn "[$iface_count] $iface: $state"
+        fi
+        
+        echo "    State:     $state"
+        echo "    MAC:       $mac"
+        echo "    Driver:    $driver"
+        if [[ "$pci_addr" != "N/A" ]]; then
+            echo "    PCI:       $pci_addr"
+        fi
+        if [[ "$state" == "UP" ]]; then
+            echo "    Speed:     $speed"
+            echo "    Duplex:    $duplex"
+        fi
+        if [[ -n "$ipv4" ]]; then
+            echo "    IPv4:      $ipv4"
+        fi
+        if [[ -n "$ipv6" ]]; then
+            echo "    IPv6:      $ipv6"
+        fi
+        echo ""
+        
+        # Capture to report
+        if $REPORT_MODE; then
+            echo "Interface: $iface" >> "$REPORT_FILE"
+            echo "  State: $state" >> "$REPORT_FILE"
+            echo "  MAC: $mac" >> "$REPORT_FILE"
+            echo "  Driver: $driver" >> "$REPORT_FILE"
+            [[ "$pci_addr" != "N/A" ]] && echo "  PCI: $pci_addr" >> "$REPORT_FILE"
+            [[ "$state" == "UP" ]] && echo "  Speed: $speed" >> "$REPORT_FILE"
+            [[ "$state" == "UP" ]] && echo "  Duplex: $duplex" >> "$REPORT_FILE"
+            [[ -n "$ipv4" ]] && echo "  IPv4: $ipv4" >> "$REPORT_FILE"
+            [[ -n "$ipv6" ]] && echo "  IPv6: $ipv6" >> "$REPORT_FILE"
+            echo "" >> "$REPORT_FILE"
         fi
     done
     
-    # Show all available interfaces
-    info "All available interfaces:"
-    local iface_output=$(ip -br link show | grep -v "lo")
-    echo "$iface_output" | while read line; do
-        echo "  $line"
-    done
-    capture_output "$iface_output"
+    # Summary
+    info "Summary: $iface_count interface(s) found - $up_count UP, $down_count DOWN"
     
-    return $failed
+    # Show brief table view
+    echo ""
+    info "Quick Overview:"
+    ip -br link show | grep -v "lo" | column -t
+    
+    # Show routing table
+    echo ""
+    info "Default Routes:"
+    ip route show | grep default || echo "  No default route configured"
+    
+    return 0
 }
 
 check_nvidia_gpu() {
