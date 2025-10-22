@@ -1024,7 +1024,7 @@ initialize_report() {
 
     mkdir -p "$REPORT_DIR"
 
-    REPORT_FILE="$REPORT_DIR/system-config-report_${hostname}_${timestamp}.txt"
+    REPORT_FILE="$REPORT_DIR/ambient_system-config-report_${hostname}_${timestamp}.txt"
     REPORT_MODE=true
 
     cat > "$REPORT_FILE" << EOF
@@ -1174,10 +1174,10 @@ main_menu() {
     while true; do
         echo ""
         echo "======================================"
-        echo "Linux System Configuration Script v0.2"
+        echo "Ambient.AI Appliance System Configuration Script v0.2"
         echo "======================================"
         echo "System Verification:"
-        echo "  1. Verify Basic System Commands"
+        echo "  1. Pre-Flight: Verify Basic System Requirements"
         echo ""
         echo "Hardware Verification:"
         echo "  2. Check Network Interfaces"
@@ -1189,8 +1189,8 @@ main_menu() {
         echo "  8. Run ALL Hardware Checks"
         echo ""
         echo "System Configuration:"
-        echo "  9. Configure Netplan"
-        echo "  10. Format and Mount Volume"
+        echo "  9.  Configure Netplan"
+        echo "  10. Format and Mount /data Volume"
         echo ""
         echo "Reporting:"
         echo "  11. Generate Full System Report (Archive)"
