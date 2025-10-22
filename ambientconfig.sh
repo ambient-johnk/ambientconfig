@@ -431,21 +431,15 @@ check_power_supplies() {
 
     capture_output "$psu_info"
 
-    echo ""
-    read -p "Enter expected PSU wattages (space-separated, e.g., 750 750 for dual 750W): " expected_wattages
-
-    if [[ -n "$expected_wattages" ]]; then
-        info "Expected PSU configuration:"
-        for watt in $expected_wattages; do
-            info "  ${watt}W PSU"
-        done
-        if [[ "$found_psu" != true ]]; then
-            warn "Manual verification recommended - check physical labels or BMC interface"
-        fi
+    # No interactive expected-wattage prompt anymore
+    # Optionally warn if we didn't find any PSU info at all
+    if [[ "$found_psu" != true ]]; then
+        warn "No PSU details were discovered via SMBIOS; consider checking BMC/iDRAC/iLO or chassis labels."
     fi
 
     return 0
 }
+
 
 check_raid_controller() {
     report_section "RAID CONTROLLER INFORMATION"
