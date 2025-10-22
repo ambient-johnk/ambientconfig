@@ -1139,7 +1139,7 @@ generate_full_report() {
 
     initialize_report
 
-    run_all_hardware_checks
+    run_all_hardware_checks || true
 
     echo ""
     echo "=========================================="
@@ -1191,7 +1191,7 @@ main_menu() {
             4) check_memory ;;
             5) check_power_supplies ;;
             6) check_raid_controller ;;
-            7) run_all_hardware_checks ;;
+            7) run_all_hardware_checks || true ;;
             8) verify_commands ;;
             9) configure_netplan ;;
             10) format_and_mount ;;
@@ -1210,7 +1210,7 @@ main_menu() {
                     initialize_report
                 fi
 
-                run_all_hardware_checks
+                run_all_hardware_checks || true
                 echo ""
                 verify_commands && configure_netplan && format_and_mount
 
