@@ -406,15 +406,37 @@ check_memory() {
     fi
 
     # Summary: count populated vs total
-    local slot_count populated
+    local slot_count populated total_installed
     slot_count="$(dmidecode -t memory | grep -c "Memory Device" || true)"
     populated="$(echo "$mem_output" | grep -c "Size:" || true)"
+
+    # Calculate total installed size from populated DIMMs
+    total_installed=0
+    while IFS= read -r size_line; do
+        # Example: "Size: 16384 MB" or "Size: 32 GB"
+        local value unit mb
+        value=$(echo "$size_line" | awk '{print $2}')
+        unit=$(echo "$size_line" | awk '{print toupper($3)}')
+        case "$unit" in
+            KB) mb=$((value / 1024));;
+            MB) mb=$((value));;
+            GB) mb=$((value * 1024));;
+            TB) mb=$((value * 1024 * 1024));;
+            *)  mb=0;;
+        esac
+        (( total_installed += mb ))
+    done < <(echo "$mem_output" | grep -E "^Size:" | grep -v "No Module Installed")
+
+    # Convert total to human-readable GB
+    local total_gb=$(( total_installed / 1024 ))
     echo ""
     info "Memory slots: $populated populated out of $slot_count total"
-    info "Total System Memory: $total_mem"
+    info "Total Installed Memory: ${total_gb} GB"
+    info "Total System Memory (reported): $total_mem"
     echo ""
     return 0
 }
+
 
 
 check_power_supplies() {
