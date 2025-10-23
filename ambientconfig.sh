@@ -826,7 +826,7 @@ verify_commands() {
 
     if command -v curl >/dev/null 2>&1; then
         # Use HEAD (-I); treat any non-000 code as reachable (000 = network/DNS/TLS error)
-        for url in "https://api.ambient.ai/" "https://home.ambient.ai/" "https://devices.ambient.ai/" "https://amq.ambient.ai/" "https://signal.ambient.ai/" "https://metrics.ambient.ai/" "https://pushprox.ambient.ai/" "https://registry1.ambient.ai/"; do
+        for url in "https://api.ambient.ai/" "https://home.ambient.ai/" "https://devices.ambient.ai/" "https://signal.ambient.ai/" "https://metrics.ambient.ai/" "https://pushprox.ambient.ai/"; do
             # --connect-timeout: time to establish TCP/TLS; --max-time: total time
             local code
             code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
