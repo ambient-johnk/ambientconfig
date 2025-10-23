@@ -437,9 +437,10 @@ check_memory() {
 
     # Human-readable totals
     local total_gb=$(( total_installed_mb / 1024 ))
-    echo ""
-    info "Memory slots: $populated populated out of $slot_count total"
-    if [[ $total_gb -gt 0 ]]; then
+    if (( total_gb >= 1024 )); then
+        local total_tb=$(( total_gb / 1024 ))
+        info "Total Installed Memory: ${total_tb} TB (${total_gb} GB)"
+    elif (( total_gb > 0 )); then
         info "Total Installed Memory: ${total_gb} GB"
     else
         warn "Total Installed Memory could not be parsed from module sizes (reported total: $total_mem)"
@@ -815,9 +816,10 @@ verify_commands() {
             log "DNS A for $domain: $ipv4 ✓"
         else
             warn "DNS lookup (A) for $domain failed or returned no IPv4!"
-            # Optional: tiny hint for troubleshooting
             if [[ -n "$raw" ]]; then
-                info "Resolver returned (filtered): $(echo "$raw" | head -1)"
+                local first_line
+                first_line="$(printf '%s\n' "$raw" | head -1)"
+                [[ -n "$first_line" ]] && info "Resolver returned (first line): $first_line"
             fi
             ((dns_failed++))
         fi
@@ -836,15 +838,13 @@ verify_commands() {
     if command -v curl >/dev/null 2>&1; then
         # Use HEAD (-I); treat any non-000 code as reachable (000 = network/DNS/TLS error)
         for url in "https://app.ambient.ai/" "https://checkip.amazonaws.com/"; do
-            # --connect-timeout: time to establish TCP/TLS; --max-time: total time
             local code
-            code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
-            if [[ -n "$code" && "$code" != "000" ]]; then
-                log "HTTPS OK: $url (HTTP $code) ✓"
+            if [[ "$url" == "https://checkip.amazonaws.com/" ]]; then
+                code="$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "$url" || true)"
             else
-                warn "HTTPS to $url failed (timeout/TLS/DNS error)"
-                ((https_failed++))
+                code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
             fi
+            ...
         done
     else
         warn "curl not found; skipping HTTPS connectivity checks"
@@ -930,6 +930,16 @@ configure_netplan() {
     if ! command -v netplan &> /dev/null; then
         error "netplan not found - is this a system using netplan?"
         return 1
+    fi
+
+    # Warn if cloud-init networking may override our changes
+    if grep -qs "network:" /etc/cloud/cloud.cfg 2>/dev/null || \
+       compgen -G "/etc/cloud/cloud.cfg.d/*.cfg" >/dev/null; then
+        if ! grep -qs "network: {config: disabled}" /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg 2>/dev/null; then
+            warn "cloud-init networking may override netplan. To disable it:"
+            info "  echo 'network: {config: disabled}' > /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg"
+            info "  Then re-run this step."
+        fi
     fi
 
     # Check systemd-networkd is available (Ubuntu 24.04 Server default)
@@ -1046,106 +1056,118 @@ EOF
 format_and_mount() {
     log "Starting volume configuration..."
 
-    # Display available block devices
-    log "Available block devices:"
-    lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE
+    # Show inventory
+    info "Block devices and partitions:"
+    lsblk -o NAME,MODEL,SIZE,TYPE,FSTYPE,MOUNTPOINT | sed 's/^/  /'
+
+    # Collect mounted device paths to prevent accidents
+    local mounted_list
+    mounted_list="$(lsblk -nrpo NAME,MOUNTPOINT | awk '$2!=""{print $1}' | sort -u)"
 
     echo ""
-    warn "WARNING: Formatting will destroy all data on the selected device!"
-    read -p "Enter device to format (e.g., sdb, nvme0n1): " device_name
+    warn "Safety: do NOT select a mounted device/partition."
+    read -p "Enter target device or partition (e.g., /dev/sda or /dev/sdb1): " target
 
-    # Add /dev/ prefix if not present
-    local device_path
-    if [[ ! "$device_name" =~ ^/dev/ ]]; then
-        device_path="/dev/$device_name"
+    # Normalize to /dev/*
+    if [[ -n "$target" && "$target" != /dev/* ]]; then
+        target="/dev/$target"
+    fi
+
+    # Validate target
+    if [[ ! -b "$target" ]]; then
+        error "Block device $target not found."
+        return 1
+    fi
+
+    # Refuse if mounted
+    if echo "$mounted_list" | grep -qx "$target"; then
+        error "$target is currently mounted. Unmount it first, then retry."
+        return 1
+    fi
+
+    # Check for existing filesystem
+    local cur_fs
+    cur_fs="$(blkid -o value -s TYPE "$target" 2>/dev/null || true)"
+    if [[ -n "$cur_fs" ]]; then
+        info "$target already has a filesystem: $cur_fs"
+        read -p "Skip formatting and just mount it? (y/N): " skip_fmt
+        if [[ "$skip_fmt" =~ ^[Yy]$ ]]; then
+            :
+        else
+            warn "Reformatting WILL DESTROY ALL DATA on $target!"
+            read -p "Type 'YES' to confirm reformat as ext4 (label 'data'): " confirm
+            if [[ "$confirm" != "YES" ]]; then
+                warn "Operation cancelled."
+                return 1
+            fi
+            log "Formatting $target as ext4 (journaled, 0% root reserve, label 'data') ..."
+            mkfs.ext4 -j -m 0 -L data "$target"
+        fi
     else
-        device_path="$device_name"
+        # No FS: format now
+        log "Formatting $target as ext4 (journaled, 0% root reserve, label 'data') ..."
+        mkfs.ext4 -j -m 0 -L data "$target"
     fi
 
-    # Verify device exists
-    if [[ ! -b "$device_path" ]]; then
-        error "Device $device_path does not exist"
-        return 1
-    fi
-
-    # Check if device is mounted
-    if mount | grep -q "^$device_path"; then
-        error "Device $device_path is currently mounted. Unmount it first."
-        return 1
-    fi
-
-    read -p "Enter filesystem type (ext4/xfs/btrfs) [default: ext4]: " fs_type
-    fs_type=${fs_type:-ext4}
-
+    # Mount point
     read -p "Enter mount point (e.g., /mnt/data): " mount_point
-
-    read -p "Enter label for filesystem [optional]: " fs_label
-
-    echo ""
-    warn "FINAL WARNING: About to format $device_path as $fs_type"
-    read -p "Type 'YES' to continue: " confirm
-
-    if [[ "$confirm" != "YES" ]]; then
-        warn "Operation cancelled"
+    if [[ -z "$mount_point" ]]; then
+        error "Mount point cannot be empty."
         return 1
     fi
-
-    # Format the device
-    log "Formatting $device_path as $fs_type..."
-    case "$fs_type" in
-        ext4)
-            if [[ -n "$fs_label" ]]; then
-                mkfs.ext4 -L "$fs_label" "$device_path"
-            else
-                mkfs.ext4 "$device_path"
-            fi
-            ;;
-        xfs)
-            if [[ -n "$fs_label" ]]; then
-                mkfs.xfs -L "$fs_label" "$device_path"
-            else
-                mkfs.xfs "$device_path"
-            fi
-            ;;
-        btrfs)
-            if [[ -n "$fs_label" ]]; then
-                mkfs.btrfs -L "$fs_label" "$device_path"
-            else
-                mkfs.btrfs "$device_path"
-            fi
-            ;;
-        *)
-            error "Unsupported filesystem type: $fs_type"
-            return 1
-            ;;
-    esac
-
-    # Create mount point
     if [[ ! -d "$mount_point" ]]; then
         mkdir -p "$mount_point"
         log "Created mount point: $mount_point"
+    else
+        if [ -n "$(ls -A "$mount_point" 2>/dev/null)" ]; then
+            warn "Mount point $mount_point is not empty."
+            read -p "Continue and mount over existing contents? (y/N): " cont_nonempty
+            if [[ ! "$cont_nonempty" =~ ^[Yy]$ ]]; then
+                warn "Operation cancelled."
+                return 1
+            fi
+        fi
     fi
 
-    # Get UUID
-    local uuid
-    uuid="$(blkid -s UUID -o value "$device_path")"
-    log "Device UUID: $uuid"
+    # Determine FS type (for fstab), prefer ext4 since we force it on format
+    local fs_type
+    fs_type="$(blkid -o value -s TYPE "$target" 2>/dev/null || echo ext4)"
 
-    # Mount the device
-    mount "$device_path" "$mount_point"
-    log "Mounted $device_path to $mount_point"
+    # Get UUID (prefer filesystem UUID)
+    local uuid use_partuuid=false
+    uuid="$(blkid -s UUID -o value "$target" 2>/dev/null || true)"
+    if [[ -z "$uuid" ]]; then
+        warn "Filesystem UUID not found; falling back to PARTUUID."
+        uuid="$(blkid -s PARTUUID -o value "$target" 2>/dev/null || true)"
+        if [[ -z "$uuid" ]]; then
+            error "No UUID/PARTUUID available for $target; refusing to write fstab."
+            return 1
+        fi
+        use_partuuid=true
+    fi
+
+    # Mount now
+    log "Mounting $target to $mount_point ..."
+    if ! mount "$target" "$mount_point"; then
+        error "Mount failed."
+        return 1
+    fi
+    log "Mounted $target to $mount_point"
 
     # Backup fstab
     cp /etc/fstab /etc/fstab.backup.$(date +%s)
 
-    # Add to fstab
+    # Add to fstab?
     read -p "Add to /etc/fstab for automatic mounting? (y/n): " add_fstab
-
     if [[ "$add_fstab" =~ ^[Yy]$ ]]; then
         read -p "Enter mount options [default: defaults]: " mount_opts
         mount_opts=${mount_opts:-defaults}
 
-        echo "UUID=$uuid $mount_point $fs_type $mount_opts 0 2" >> /etc/fstab
+        if [[ "$use_partuuid" == true ]]; then
+            echo "PARTUUID=$uuid $mount_point $fs_type $mount_opts 0 2" >> /etc/fstab
+        else
+            echo "UUID=$uuid $mount_point $fs_type $mount_opts 0 2" >> /etc/fstab
+        fi
         log "Added entry to /etc/fstab"
 
         # Verify fstab
@@ -1158,6 +1180,7 @@ format_and_mount() {
 
     log "Volume configuration complete!"
 }
+
 
 # ============================================
 # SECTION 5: Timezone Configuration
