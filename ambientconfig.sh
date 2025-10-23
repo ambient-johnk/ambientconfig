@@ -1545,7 +1545,7 @@ main_menu() {
     while true; do
         echo ""
         echo "======================================"
-        echo "          AmbientOS Appliance         "
+        echo "          AmbientOS Appliances         "
         echo "      System Configuration Script     "
         echo "      version 0.13 - 10232025 - jk    "
         echo "======================================"
