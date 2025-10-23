@@ -794,9 +794,57 @@ verify_commands() {
 
     # Check network connectivity
     if ping -c 1 8.8.8.8 &> /dev/null; then
-        log "Network connectivity: OK"
+        log "Ping 8.8.8.8 Network connectivity: OK"
     else
-        warn "Network connectivity: FAILED"
+        warn "Ping 8.8.8.8 Network connectivity: FAILED"
+        ((failed++))
+    fi
+
+    # DNS resolution checks
+    info "Checking DNS resolution..."
+    local dns_failed=0
+
+    for domain in "api.ambient.ai" "www.google.com"; do
+        local resolved
+        resolved="$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1)"
+        if [[ -n "$resolved" ]]; then
+            log "DNS lookup for $domain resolved to $resolved ✓"
+        else
+            warn "DNS lookup for $domain failed!"
+            ((dns_failed++))
+        fi
+    done
+
+    if (( dns_failed > 0 )); then
+        warn "$dns_failed DNS check(s) failed — verify /etc/resolv.conf or DNS settings."
+        ((failed++))
+    fi
+
+    # HTTPS reachability checks
+    info "Checking HTTPS connectivity..."
+    local https_failed=0
+
+    if command -v curl >/dev/null 2>&1; then
+        # Use HEAD (-I); treat any non-000 code as reachable (000 = network/DNS/TLS error)
+        for url in "https://api.ambient.ai/" "https://home.ambient.ai/" "https://devices.ambient.ai/" "https://amq.ambient.ai/" "https://signal.ambient.ai/" "https://metrics.ambient.ai/" "https://pushprox.ambient.ai/" "https://registry1.ambient.ai/"; do
+            # --connect-timeout: time to establish TCP/TLS; --max-time: total time
+            local code
+            code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
+            if [[ -n "$code" && "$code" != "000" ]]; then
+                log "HTTPS OK: $url (HTTP $code) ✓"
+            else
+                warn "HTTPS to $url failed (timeout/TLS/DNS error)"
+                ((https_failed++))
+            fi
+        done
+    else
+        warn "curl not found; skipping HTTPS connectivity checks"
+        # Optional: mark as a soft failure
+        # ((failed++))
+    fi
+
+    if (( https_failed > 0 )); then
+        warn "$https_failed HTTPS check(s) failed"
         ((failed++))
     fi
 
