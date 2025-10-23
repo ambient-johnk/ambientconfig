@@ -826,7 +826,7 @@ verify_commands() {
 
     if command -v curl >/dev/null 2>&1; then
         # Use HEAD (-I); treat any non-000 code as reachable (000 = network/DNS/TLS error)
-        for url in "https://app.ambient.ai/" "https://home.ambient.ai/" "https://devices.ambient.ai/" "https://signal.ambient.ai/" "https://metrics.ambient.ai/" "https://pushprox.ambient.ai/"; do
+        for url in "https://app.ambient.ai/" "https://checkip.amazonaws.com/"; do
             # --connect-timeout: time to establish TCP/TLS; --max-time: total time
             local code
             code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
@@ -848,6 +848,22 @@ verify_commands() {
         ((failed++))
     fi
 
+    # Public IP address check
+    info "Checking public IP address..."
+    if command -v curl >/dev/null 2>&1; then
+        local pub_ip
+        pub_ip="$(curl -s --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')"
+        if [[ -n "$pub_ip" ]]; then
+            log "Public IP address: $pub_ip"
+        else
+            warn "Unable to retrieve public IP from checkip.amazonaws.com"
+            ((failed++))
+        fi
+    else
+        warn "curl not found; skipping public IP check"
+        ((failed++))
+    fi
+    
     # Check disk space (warn if root partition < 10% free)
     local root_usage
     root_usage="$(df / | tail -1 | awk '{print $5}' | sed 's/%//')"
@@ -1437,7 +1453,9 @@ main_menu() {
     while true; do
         echo ""
         echo "======================================"
-        echo "Ambient.AI Appliance System Configuration Script v0.2"
+        echo "          AmbientOS Appliance         "
+        echo "      System Configuration Script     "
+        echo "      version 0.13 - 10232025 - jk    "
         echo "======================================"
         echo "System Verification:"
         echo "  1. Pre-Flight: Verify Basic System Requirements"
