@@ -1060,13 +1060,22 @@ format_and_mount() {
     info "Block devices and partitions:"
     lsblk -o NAME,MODEL,SIZE,TYPE,FSTYPE,MOUNTPOINT | sed 's/^/  /'
 
-    # Collect mounted device paths to prevent accidents
+    # Collect mounted device paths
     local mounted_list
     mounted_list="$(lsblk -nrpo NAME,MOUNTPOINT | awk '$2!=""{print $1}' | sort -u)"
 
     echo ""
     warn "Safety: do NOT select a mounted device/partition."
+    echo "Type 'q' or 'quit' at any time to return to the main menu."
     read -p "Enter target device or partition (e.g., /dev/sda or /dev/sdb1): " target
+
+    # Allow quitting
+    case "$target" in
+        q|Q|quit|QUIT)
+            warn "Operation cancelled. Returning to main menu..."
+            return 0
+            ;;
+    esac
 
     # Normalize to /dev/*
     if [[ -n "$target" && "$target" != /dev/* ]]; then
@@ -1129,7 +1138,7 @@ format_and_mount() {
         fi
     fi
 
-    # Determine FS type (for fstab), prefer ext4 since we force it on format
+    # Determine FS type (for fstab)
     local fs_type
     fs_type="$(blkid -o value -s TYPE "$target" 2>/dev/null || echo ext4)"
 
@@ -1180,6 +1189,7 @@ format_and_mount() {
 
     log "Volume configuration complete!"
 }
+
 
 
 # ============================================
