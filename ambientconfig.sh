@@ -804,7 +804,7 @@ verify_commands() {
     info "Checking DNS resolution..."
     local dns_failed=0
 
-    for domain in "api.ambient.ai" "www.google.com"; do
+    for domain in "app.ambient.ai" "ambient.ai"; do
         local resolved
         resolved="$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1)"
         if [[ -n "$resolved" ]]; then
@@ -826,7 +826,7 @@ verify_commands() {
 
     if command -v curl >/dev/null 2>&1; then
         # Use HEAD (-I); treat any non-000 code as reachable (000 = network/DNS/TLS error)
-        for url in "https://api.ambient.ai/" "https://home.ambient.ai/" "https://devices.ambient.ai/" "https://signal.ambient.ai/" "https://metrics.ambient.ai/" "https://pushprox.ambient.ai/"; do
+        for url in "https://app.ambient.ai/" "https://home.ambient.ai/" "https://devices.ambient.ai/" "https://signal.ambient.ai/" "https://metrics.ambient.ai/" "https://pushprox.ambient.ai/"; do
             # --connect-timeout: time to establish TCP/TLS; --max-time: total time
             local code
             code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
@@ -951,7 +951,6 @@ EOF
         if [[ "$use_dhcp" =~ ^[Yy]$ ]]; then
             cat >> "$netplan_config" << EOF
       dhcp4: true
-      dhcp6: true
 EOF
         else
             read -p "Enter static IP (e.g., 192.168.1.100/24): " static_ip
@@ -962,7 +961,6 @@ EOF
 
             cat >> "$netplan_config" << EOF
       dhcp4: false
-      dhcp6: false
       addresses:
         - $static_ip
       routes:
@@ -1135,6 +1133,143 @@ format_and_mount() {
 
     log "Volume configuration complete!"
 }
+
+# ============================================
+# SECTION 5: Timezone Configuration
+# ============================================
+configure_timezone() {
+    log "Starting timezone configuration..."
+
+    if ! command -v timedatectl >/dev/null 2>&1; then
+        error "timedatectl command not found. This system may not use systemd."
+        return 1
+    fi
+
+    echo ""
+    info "Current time configuration:"
+    timedatectl status
+    echo ""
+
+    echo "Available U.S. timezones:"
+    echo "  1. Pacific Time (US/Pacific)"
+    echo "  2. Mountain Time (US/Mountain)"
+    echo "  3. Central Time (US/Central)"
+    echo "  4. Eastern Time (US/Eastern)"
+    echo "  5. Alaska Time (US/Alaska)"
+    echo "  6. Hawaii Time (US/Hawaii)"
+    echo "  7. Other (manual entry)"
+    echo ""
+    read -p "Select timezone [1-7]: " tz_choice
+
+    local tz=""
+    case "$tz_choice" in
+        1) tz="US/Pacific" ;;
+        2) tz="US/Mountain" ;;
+        3) tz="US/Central" ;;
+        4) tz="US/Eastern" ;;
+        5) tz="US/Alaska" ;;
+        6) tz="US/Hawaii" ;;
+        7)
+            read -p "Enter a valid timezone (e.g., America/New_York): " tz
+            ;;
+        *)
+            warn "Invalid option. No changes made."
+            return 1
+            ;;
+    esac
+
+    if [[ -n "$tz" ]]; then
+        log "Setting timezone to: $tz"
+        if timedatectl set-timezone "$tz"; then
+            log "Timezone successfully set to $tz ✓"
+        else
+            error "Failed to set timezone to $tz"
+            return 1
+        fi
+    fi
+
+    echo ""
+    info "Updated time configuration:"
+    timedatectl status
+
+    # ---- Time sync via htpdate (temporary install) ----
+    echo ""
+    info "Synchronizing system clock via htpdate (temporary)..."
+    local installed_htpdate_temp=false
+    export DEBIAN_FRONTEND=noninteractive
+
+    if ! command -v htpdate >/dev/null 2>&1; then
+        log "Installing htpdate..."
+        # Keep these guarded so set -e doesn't kill the script
+        if ! apt-get update -y >/dev/null 2>&1; then
+            warn "apt-get update failed; attempting install anyway"
+        fi
+        if apt-get install -y --no-install-recommends htpdate >/dev/null 2>&1; then
+            installed_htpdate_temp=true
+            log "htpdate installed ✓"
+        else
+            error "Failed to install htpdate; cannot perform HTTP time sync"
+            return 1
+        fi
+    fi
+
+    # Try up to 5 times until htpdate says the clock needs no updating
+    local attempts=5
+    local synced=false
+    for ((i=1; i<=attempts; i++)); do
+        local out
+        out="$(htpdate -s google.com 2>&1 || true)"
+        echo "$out"
+        if echo "$out" | grep -qiE "No time correction needed"; then
+            synced=true
+            log "Time is synchronized (attempt $i) ✓"
+            break
+        fi
+        sleep 2
+    done
+
+    if [[ "$synced" != true ]]; then
+        warn "htpdate did not report 'No time correction needed' after $attempts attempts"
+    fi
+
+    # --- Log current time and UTC offset after sync ---
+    # Get timezone name (if available), local time with zone, and UTC time
+    local tz_name offset now utcnow
+    tz_name="$(timedatectl show -p Timezone --value 2>/dev/null || echo "unknown")"
+    # Prefer %:z (±HH:MM); fallback to %z (±HHMM) if %:z unsupported
+    offset="$(date +%:z 2>/dev/null || date +%z)"
+    now="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    utcnow="$(TZ=UTC date '+%Y-%m-%d %H:%M:%S UTC')"
+
+    info "Timezone: $tz_name"
+    info "Local time: $now (UTC$offset)"
+    info "UTC time:   $utcnow"
+
+    # Capture into report if enabled
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo ""
+            echo "Time after synchronization:"
+            echo "  Timezone: $tz_name"
+            echo "  Local: $now (UTC$offset)"
+            echo "  UTC:   $utcnow"
+        } >> "$REPORT_FILE"
+    fi
+
+    # Remove htpdate if we installed it
+    if [[ "$installed_htpdate_temp" == true ]]; then
+        log "Removing temporary htpdate package..."
+        if apt-get purge -y htpdate >/dev/null 2>&1; then
+            apt-get autoremove -y >/dev/null 2>&1 || true
+            log "htpdate removed ✓"
+        else
+            warn "Failed to purge htpdate (you can remove it later with 'apt purge htpdate')"
+        fi
+    fi
+
+    return 0
+}
+
 
 # ============================================
 # SECTION 7: Report Generation
@@ -1313,14 +1448,15 @@ main_menu() {
         echo ""
         echo "System Configuration:"
         echo "  9.  Configure Netplan"
-        echo "  10. Format and Mount /data Volume"
+        echo "  10. Configure Timezone"
+        echo "  11. Format and Mount Volume"
         echo ""
         echo "Reporting:"
-        echo "  11. Generate Full System Report (Archive)"
-        echo "  12. View Recent Reports"
+        echo "  12. Generate Full System Report (Archive)"
+        echo "  13. View Recent Reports"
         echo ""
-        echo "  13. Run Everything"
-        echo "  14. Exit"
+        echo "  14. Run Everything"
+        echo "  15. Exit"
         echo ""
         read -p "Select an option: " choice
 
@@ -1334,9 +1470,10 @@ main_menu() {
             7) check_raid_controller || true ;;
             8) run_all_hardware_checks || true ;;
             9) configure_netplan ;;
-            10) format_and_mount ;;
-            11) generate_full_report ;;
-            12)
+            10) configure_timezone ;;
+            11) format_and_mount ;;
+            12) generate_full_report ;;
+            13)
                 if [[ -d "$REPORT_DIR" ]]; then
                     log "Recent reports in $REPORT_DIR:"
                     ls -lth "$REPORT_DIR" | head -20
@@ -1344,7 +1481,7 @@ main_menu() {
                     warn "No reports found in $REPORT_DIR"
                 fi
                 ;;
-            13)
+            14)
                 read -p "Generate report while running all tasks? (y/n): " gen_report
                 if [[ "$gen_report" =~ ^[Yy]$ ]]; then
                     initialize_report
@@ -1361,7 +1498,7 @@ main_menu() {
                     finalize_report
                 fi
                 ;;
-            14)
+            15)
                 log "Exiting..."
                 exit 0
                 ;;
