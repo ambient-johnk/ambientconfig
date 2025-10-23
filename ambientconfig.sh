@@ -852,9 +852,9 @@ verify_commands() {
     local root_usage
     root_usage="$(df / | tail -1 | awk '{print $5}' | sed 's/%//')"
     if [[ $root_usage -lt 90 ]]; then
-        log "Disk space: OK (${root_usage}% used)"
+        log "Boot/Root Disk space: OK (${root_usage}% used)"
     else
-        warn "Disk space: LOW (${root_usage}% used)"
+        warn "Boot/Root Disk space: LOW (${root_usage}% used)"
         ((failed++))
     fi
 
