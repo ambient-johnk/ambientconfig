@@ -801,25 +801,33 @@ verify_commands() {
     fi
 
     # DNS resolution checks (IPv4 only)
-    info "Checking DNS resolution (IPv4)..."
+    info "Checking DNS resolution (IPv4 only)..."
     local dns_failed=0
+    local domains=("api.ambient.ai" "app.ambient.ai" "www.google.com")
 
-    for domain in "app.ambient.ai" "ambient.ai"; do
-        # Use getent hosts and only accept IPv4 lines (no colons)
-        local resolved
-        resolved="$(getent hosts "$domain" 2>/dev/null | awk '$1 !~ /:/' | awk '{print $1}' | head -1)"
-        if [[ -n "$resolved" ]]; then
-            log "DNS lookup for $domain resolved to $resolved (IPv4) ✓"
+    for domain in "${domains[@]}"; do
+        # getent ahostsv4 prints IPv4 results only; pick first dotted-quad
+        local raw ipv4
+        raw="$(getent ahostsv4 "$domain" 2>/dev/null || true)"
+        ipv4="$(printf '%s\n' "$raw" | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {print $1; exit}')"
+
+        if [[ -n "$ipv4" ]]; then
+            log "DNS A for $domain: $ipv4 ✓"
         else
-            warn "DNS lookup for $domain failed or returned no IPv4 address!"
+            warn "DNS lookup (A) for $domain failed or returned no IPv4!"
+            # Optional: tiny hint for troubleshooting
+            if [[ -n "$raw" ]]; then
+                info "Resolver returned (filtered): $(echo "$raw" | head -1)"
+            fi
             ((dns_failed++))
         fi
     done
 
     if (( dns_failed > 0 )); then
-        warn "$dns_failed DNS check(s) failed — verify /etc/resolv.conf or DNS settings."
+        warn "$dns_failed DNS check(s) failed — verify A records or resolver settings."
         ((failed++))
     fi
+
 
     # HTTPS reachability checks
     info "Checking HTTPS connectivity..."
