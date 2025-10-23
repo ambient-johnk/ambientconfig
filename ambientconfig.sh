@@ -889,7 +889,7 @@ verify_commands() {
             else
                 code="$(curl -sS -o /dev/null -w "%{http_code}" -I --connect-timeout 5 --max-time 8 "$url" || true)"
             fi
-                        if [[ -n "$code" && "$code" != "000" ]]; then
+            if [[ -n "$code" && "$code" != "000" ]]; then
                 log "HTTPS OK: $url (HTTP $code) ✓"
             else
                 warn "HTTPS to $url failed (timeout/TLS/DNS error)"
