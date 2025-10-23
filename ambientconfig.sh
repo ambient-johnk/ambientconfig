@@ -793,6 +793,51 @@ verify_commands() {
         fi
     fi
 
+    # System identity (vendor, model, Service Tag / serial, BIOS, BMC)
+    if command -v dmidecode >/dev/null 2>&1; then
+        local vendor model service_tag bios_version bios_date bmc_firmware
+
+        vendor="$(dmidecode -s system-manufacturer 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        model="$(dmidecode -s system-product-name 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        service_tag="$(dmidecode -s system-serial-number 2>/dev/null | tr -d '[:space:]')"
+        bios_version="$(dmidecode -s bios-version 2>/dev/null | xargs)"
+        bios_date="$(dmidecode -s bios-release-date 2>/dev/null | xargs)"
+        bmc_firmware="$(ipmitool mc info 2>/dev/null | awk -F: '/Firmware Revision/ {gsub(/^[ \t]+/,"",$2); print $2; exit}' || true)"
+
+        [[ -z "$vendor" || "$vendor" == "None" || "$vendor" == "To Be Filled By O.E.M." ]] && vendor="Unknown vendor"
+        [[ -z "$model"  || "$model"  == "None"  || "$model"  == "To Be Filled By O.E.M." ]] && model="Unknown model"
+
+        if [[ -n "$service_tag" && "$service_tag" != "None" && "$service_tag" != "ToBeFilledByO.E.M." ]]; then
+            log "System: $vendor $model (Service Tag: $service_tag)"
+        else
+            log "System: $vendor $model"
+            warn "System serial number unavailable or generic."
+        fi
+
+        if [[ -n "$bios_version" ]]; then
+            log "BIOS Version: $bios_version (${bios_date:-unknown date})"
+        fi
+
+        if [[ -n "$bmc_firmware" ]]; then
+            log "BMC/iDRAC Firmware Revision: $bmc_firmware"
+        fi
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+            {
+                echo "System Identity:"
+                echo "  Vendor: $vendor"
+                echo "  Model:  $model"
+                echo "  Service Tag: ${service_tag:-Unknown}"
+                echo "  BIOS Version: ${bios_version:-Unknown} (${bios_date:-N/A})"
+                echo "  BMC/iDRAC Firmware: ${bmc_firmware:-N/A}"
+                echo ""
+            } >> "$REPORT_FILE"
+        fi
+    else
+        warn "dmidecode not found; cannot retrieve system identity / Service Tag / BIOS info"
+    fi
+
+
     # Check network connectivity
     if ping -c 1 8.8.8.8 &> /dev/null; then
         log "Ping 8.8.8.8 Network connectivity: OK"
