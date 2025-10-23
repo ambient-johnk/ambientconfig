@@ -1151,24 +1151,24 @@ configure_timezone() {
     echo ""
 
     echo "Available U.S. timezones:"
-    echo "  1. Pacific Time (US/Pacific)"
-    echo "  2. Mountain Time (US/Mountain)"
-    echo "  3. Central Time (US/Central)"
-    echo "  4. Eastern Time (US/Eastern)"
-    echo "  5. Alaska Time (US/Alaska)"
-    echo "  6. Hawaii Time (US/Hawaii)"
+    echo "  1. Pacific Time (America/Los_Angeles)"
+    echo "  2. Mountain Time (America/Denver)"
+    echo "  3. Central Time (America/Chicago)"
+    echo "  4. Eastern Time (America/New_York)"
+    echo "  5. Alaska Time (America/Anchorage)"
+    echo "  6. Hawaii Time (Pacific/Honolulu)"
     echo "  7. Other (manual entry)"
     echo ""
     read -p "Select timezone [1-7]: " tz_choice
 
     local tz=""
     case "$tz_choice" in
-        1) tz="US/Pacific" ;;
-        2) tz="US/Mountain" ;;
-        3) tz="US/Central" ;;
-        4) tz="US/Eastern" ;;
-        5) tz="US/Alaska" ;;
-        6) tz="US/Hawaii" ;;
+        1) tz="America/Los_Angeles" ;;
+        2) tz="America/Denver" ;;
+        3) tz="America/Chicago" ;;
+        4) tz="America/New_York" ;;
+        5) tz="America/Anchorage" ;;
+        6) tz="Pacific/Honolulu" ;;
         7)
             read -p "Enter a valid timezone (e.g., America/New_York): " tz
             ;;
@@ -1178,14 +1178,19 @@ configure_timezone() {
             ;;
     esac
 
-    if [[ -n "$tz" ]]; then
-        log "Setting timezone to: $tz"
-        if timedatectl set-timezone "$tz"; then
-            log "Timezone successfully set to $tz ✓"
-        else
-            error "Failed to set timezone to $tz"
-            return 1
-        fi
+    # Validate the timezone exists on this system
+    if ! timedatectl list-timezones 2>/dev/null | grep -Fxq "$tz"; then
+        error "Invalid or unavailable timezone: '$tz'"
+        info  "Tip: run 'timedatectl list-timezones | grep -i <city>' to find valid names."
+        return 1
+    fi
+
+    log "Setting timezone to: $tz"
+    if timedatectl set-timezone "$tz"; then
+        log "Timezone successfully set to $tz ✓"
+    else
+        error "Failed to set timezone to $tz"
+        return 1
     fi
 
     echo ""
