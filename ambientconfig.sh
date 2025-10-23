@@ -804,7 +804,7 @@ verify_commands() {
     info "Checking DNS resolution (IPv4)..."
     local dns_failed=0
 
-    for domain in "api.ambient.ai" "www.google.com"; do
+    for domain in "app.ambient.ai" "ambient.ai"; do
         # Use getent hosts and only accept IPv4 lines (no colons)
         local resolved
         resolved="$(getent hosts "$domain" 2>/dev/null | awk '$1 !~ /:/' | awk '{print $1}' | head -1)"
