@@ -915,13 +915,14 @@ configure_netplan() {
 
     # Display available interfaces
     log "Available network interfaces:"
-    ip -br link show | awk '$1 != "lo" {print}'
+#    ip -br link show | awk '$1 != "lo" {print}'
+    ip -br link show | awk '$1!="lo" && $1 !~ /^(veth|docker)/ {print}' || true
 
     echo ""
     read -p "Enter number of interfaces to configure: " num_interfaces
 
-    local netplan_config="/etc/netplan/01-netcfg.yaml"
-    local backup="/etc/netplan/01-netcfg.yaml.backup.$(date +%s)"
+    local netplan_config="/etc/netplan/50-cloud-init.yaml"
+    local backup="/etc/netplan/50-cloud-init.yaml.backup.$(date +%s)"
 
     # Backup existing config if it exists
     if [[ -f "$netplan_config" ]]; then
@@ -991,7 +992,7 @@ EOF
     fi
 
     echo ""
-    read -p "Apply this configuration? (y/n): " apply_config
+    read -p "Apply this configuration? If no, it is saved, apply it later (y/n): " apply_config
 
     if [[ "$apply_config" =~ ^[Yy]$ ]]; then
         log "Applying netplan configuration..."
