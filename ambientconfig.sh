@@ -1488,7 +1488,7 @@ main_menu() {
         echo "  13. View Recent Reports"
         echo ""
         echo "  14. Run Everything"
-        echo "  15. Exit"
+        echo "  99. Exit"
         echo ""
         read -p "Select an option: " choice
 
@@ -1530,7 +1530,7 @@ main_menu() {
                     finalize_report
                 fi
                 ;;
-            15)
+            99)
                 log "Exiting..."
                 exit 0
                 ;;
