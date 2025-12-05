@@ -1176,6 +1176,8 @@ verify_commands() {
         ((failed++))
     fi
 
+    log "Pre-Flight Summary: SecureBoot=$secureboot_status, Docker=$docker_status"
+
     if [[ $failed -gt 0 ]]; then
         error "$failed check(s) failed"
         return 1
