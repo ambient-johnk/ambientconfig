@@ -81,6 +81,99 @@ capture_output() {
 }
 
 # ============================================
+# Speedtest CLI helpers (Ubuntu package)
+# ============================================
+
+install_speedtest_cli() {
+    log "Ensuring Ubuntu speedtest-cli package is installed..."
+
+    if command -v speedtest-cli >/dev/null 2>&1; then
+        info "speedtest-cli already installed."
+        speedtest-cli --version 2>/dev/null || true
+        return 0
+    fi
+
+    export DEBIAN_FRONTEND=noninteractive
+
+    if ! apt-get update -y >/dev/null 2>&1; then
+        error "apt-get update failed; cannot install speedtest-cli."
+        return 1
+    fi
+
+    if apt-get install -y speedtest-cli >/dev/null 2>&1; then
+        log "Ubuntu speedtest-cli installed successfully."
+        speedtest-cli --version 2>/dev/null || true
+
+        if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+            {
+                echo ""
+                echo "Installed Ubuntu speedtest-cli:"
+                speedtest-cli --version 2>/dev/null || echo "version unknown"
+                echo ""
+            } >> "$REPORT_FILE"
+        fi
+
+        return 0
+    else
+        error "Failed to install the Ubuntu speedtest-cli package."
+        return 1
+    fi
+}
+
+network_speed_test() {
+    report_section "NETWORK SPEED TEST"
+    log "Starting external network speed test..."
+
+    # Make sure speedtest-cli is present
+    if ! command -v speedtest-cli >/dev/null 2>&1; then
+        warn "speedtest-cli is not installed — attempting installation from Ubuntu repo..."
+        if ! install_speedtest_cli; then
+            warn "Unable to install speedtest-cli. Skipping speed test."
+            return 1
+        fi
+    fi
+
+    if ! command -v speedtest-cli >/dev/null 2>&1; then
+        warn "speedtest-cli still not available after install attempt; skipping speed test."
+        return 1
+    fi
+
+    info "Running speedtest-cli..."
+    # Avoid killing script under set -e
+    local st_out
+    st_out="$(speedtest-cli 2>&1 || true)"
+
+    if [[ -z "$st_out" ]]; then
+        warn "speedtest-cli produced no output; skipping."
+        return 1
+    fi
+
+    echo "$st_out"
+
+    # Try to surface a concise summary
+    local dl ul ping
+    dl="$(echo "$st_out" | awk '/Download:/ {print $2, $3; exit}')"
+    ul="$(echo "$st_out" | awk '/Upload:/ {print $2, $3; exit}')"
+    ping="$(echo "$st_out" | awk '/Hosted by/ {for(i=1;i<=NF;i++) if($i=="ping") {print $(i-1)" "$(i) ; exit}}')"
+
+    [[ -n "$dl" ]]   && log "Speedtest Download: $dl"
+    [[ -n "$ul" ]]   && log "Speedtest Upload:   $ul"
+    [[ -n "$ping" ]] && log "Speedtest Latency:  $ping"
+
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo ""
+            echo "speedtest-cli output:"
+            echo "$st_out"
+            echo ""
+        } >> "$REPORT_FILE"
+    fi
+
+    log "Network speed test completed."
+    return 0
+}
+
+# ============================================
 # SECTION 1: Hardware Verification
 # ============================================
 
@@ -235,6 +328,13 @@ check_network_interfaces() {
     echo ""
     info "Default Routes:"
     ip route show | grep default || echo "  No default route configured"
+
+    # Optional external speed test
+    echo ""
+    read -p "Run external network speed test (speedtest-cli)? (y/n): " run_speedtest
+    if [[ "$run_speedtest" =~ ^[Yy]$ ]]; then
+        network_speed_test || warn "Network speed test encountered an issue (see output above)."
+    fi
 
     return 0
 }
