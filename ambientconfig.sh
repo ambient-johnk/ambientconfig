@@ -1300,6 +1300,120 @@ format_and_mount() {
     log "Volume configuration complete!"
 }
 
+# ============================================
+# SECTION 6: Docker CE Installation (Pinned Version)
+# ============================================
+install_pinned_docker() {
+    log "Starting Docker CE installation (pinned version)..."
+
+    local required_ver="5:28.5.2-1~ubuntu.24.04~noble"
+    local current_ver=""
+
+    # Check if docker-ce is already installed and at the desired version
+    if dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null | grep -q .; then
+        current_ver="$(dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null || true)"
+        if [[ "$current_ver" == "$required_ver" ]]; then
+            log "docker-ce already installed at required version: $required_ver"
+            info "Ensuring APT pinning is in place..."
+        else
+            warn "docker-ce is installed at version: $current_ver"
+            warn "Required pinned version is: $required_ver"
+            read -p "Change to pinned version $required_ver? (y/N): " change_ver
+            if [[ ! "$change_ver" =~ ^[Yy]$ ]]; then
+                warn "User chose not to change Docker version. Aborting Docker step."
+                return 1
+            fi
+        fi
+    else
+        info "docker-ce is not currently installed; proceeding with install."
+    fi
+
+    # We assume:
+    # - Docker APT repo is already configured
+    # - GPG key is already installed
+    # - apt transport bits already exist
+    export DEBIAN_FRONTEND=noninteractive
+
+    if ! apt-get update -y; then
+        error "apt-get update failed; cannot continue Docker installation."
+        return 1
+    fi
+
+    # Sanity check: make sure the target version is actually available in APT
+    if ! apt-cache madison docker-ce 2>/dev/null | awk '{print $3}' | grep -qx "$required_ver"; then
+        error "Required docker-ce version $required_ver is not available from configured repositories."
+        info  "Check 'apt-cache madison docker-ce' manually to see available versions."
+        return 1
+    fi
+
+    # Install/upgrade/downgrade docker-ce and docker-ce-cli to the pinned version
+    log "Installing docker-ce and docker-ce-cli at version $required_ver ..."
+    if ! apt-get install -y \
+        docker-ce="$required_ver" \
+        docker-ce-cli="$required_ver"; then
+        error "Failed to install docker-ce=$required_ver and docker-ce-cli=$required_ver."
+        return 1
+    fi
+
+    # Optionally ensure supporting packages are present (no pinned version for these)
+    apt-get install -y docker-buildx-plugin docker-compose-plugin containerd.io >/dev/null 2>&1 || \
+        warn "Failed to install one or more docker support packages (buildx/compose/containerd)."
+
+    # Re-read installed version
+    current_ver="$(dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null || echo "unknown")"
+    log "docker-ce installed version is now: $current_ver"
+
+    # --- Pin Docker CE and CLI to this version ---
+    log "Configuring APT pinning for Docker packages..."
+    cat > /etc/apt/preferences.d/docker-pin <<EOF
+Package: docker-ce
+Pin: version ${required_ver}
+Pin-Priority: 1001
+
+Package: docker-ce-cli
+Pin: version ${required_ver}
+Pin-Priority: 1001
+EOF
+
+    # --- Enable and start Docker service ---
+    log "Enabling and starting docker.service..."
+    if ! systemctl enable --now docker >/dev/null 2>&1; then
+        error "Failed to enable/start docker.service. Check 'systemctl status docker'."
+        # Do not hard-fail here; Docker may still be installed correctly.
+    fi
+
+    # Verify Docker CLI
+    if command -v docker >/dev/null 2>&1; then
+        local dv
+        dv="$(docker --version 2>/dev/null || true)"
+        if [[ -n "$dv" ]]; then
+            log "Docker CLI version: $dv"
+        else
+            warn "docker command exists, but 'docker --version' returned no output."
+        fi
+    else
+        warn "docker binary not found in PATH after installation."
+    fi
+
+    # Show apt policy summary for docker-ce
+    info "APT policy for docker-ce (confirming pinning):"
+    apt-cache policy docker-ce || true
+
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo ""
+            echo "Docker CE Installation Summary:"
+            echo "  Required version: $required_ver"
+            echo "  Installed version: $current_ver"
+            echo ""
+            echo "apt-cache policy docker-ce:"
+            apt-cache policy docker-ce 2>&1
+        } >> "$REPORT_FILE"
+    fi
+
+    log "Docker CE pinned installation step completed."
+    return 0
+}
 
 
 # ============================================
@@ -1625,12 +1739,13 @@ main_menu() {
         echo "  9.  Configure Netplan"
         echo "  10. Configure Timezone"
         echo "  11. Format and Mount Volume"
+        echo "  12. Install & Pin Docker CE 5:28.5.2 (Ubuntu 24.04)"
         echo ""
         echo "Reporting:"
-        echo "  12. Generate Full System Report (Archive)"
-        echo "  13. View Recent Reports"
+        echo "  13. Generate Full System Report (Archive)"
+        echo "  14. View Recent Reports"
         echo ""
-        echo "  14. Run Everything"
+        echo "  15. Run Everything"
         echo "  99. Exit"
         echo ""
         read -p "Select an option: " choice
@@ -1647,7 +1762,7 @@ main_menu() {
             9) configure_netplan ;;
             10) configure_timezone ;;
             11) format_and_mount ;;
-            12) generate_full_report ;;
+            12) install_pinned_docker ;;
             13)
                 if [[ -d "$REPORT_DIR" ]]; then
                     log "Recent reports in $REPORT_DIR:"
@@ -1656,7 +1771,8 @@ main_menu() {
                     warn "No reports found in $REPORT_DIR"
                 fi
                 ;;
-            14)
+            14) generate_full_report ;;
+            15)
                 read -p "Generate report while running all tasks? (y/n): " gen_report
                 if [[ "$gen_report" =~ ^[Yy]$ ]]; then
                     initialize_report
