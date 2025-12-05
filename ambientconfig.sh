@@ -837,6 +837,66 @@ verify_commands() {
         warn "dmidecode not found; cannot retrieve system identity / Service Tag / BIOS info"
     fi
 
+    # Secure Boot check (UEFI only)
+    if [[ -d /sys/firmware/efi ]]; then
+        info "UEFI firmware detected; checking Secure Boot state..."
+
+        # Prefer mokutil if available
+        if command -v mokutil >/dev/null 2>&1; then
+            local sb_status
+            sb_status="$(mokutil --sb-state 2>/dev/null || true)"
+
+            if echo "$sb_status" | grep -qi "disabled"; then
+                log "Secure Boot: disabled ✓"
+            elif echo "$sb_status" | grep -qi "enabled"; then
+                error "Secure Boot: ENABLED - please disable it in the BIOS/UEFI firmware for AmbientOS."
+                ((failed++))
+            else
+                warn "Secure Boot: unable to determine from mokutil output."
+                [[ -n "$sb_status" ]] && info "mokutil output: $sb_status"
+            fi
+        else
+            # Fallback: read EFI SecureBoot variable directly
+            local sb_file sb_val
+            sb_file="$(ls /sys/firmware/efi/vars/SecureBoot-*/data 2>/dev/null | head -1 || true)"
+
+            if [[ -n "$sb_file" && -r "$sb_file" ]]; then
+                # value 0 = disabled, 1 = enabled according to UEFI spec
+                sb_val="$(hexdump -v -e '1/1 "%d"' "$sb_file" 2>/dev/null || true)"
+                case "$sb_val" in
+                    0)
+                        log "Secure Boot: disabled (per EFI variable) ✓"
+                        ;;
+                    1)
+                        error "Secure Boot: ENABLED (per EFI variable) - please disable it in BIOS/UEFI."
+                        ((failed++))
+                        ;;
+                    *)
+                        warn "Secure Boot: unknown state value '$sb_val' from EFI variable."
+                        ;;
+                esac
+            else
+                warn "Secure Boot: unable to read EFI SecureBoot variable; cannot verify state."
+            fi
+        fi
+    else
+        info "No /sys/firmware/efi detected (legacy BIOS or non-UEFI); Secure Boot not applicable."
+    fi
+
+    # Report: Secure Boot status
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo "Secure Boot Status:"
+            if [[ -n "$sb_status" ]]; then
+                echo "  mokutil result: $sb_status"
+            elif [[ -n "$sb_val" ]]; then
+                echo "  EFI variable value: $sb_val"
+            else
+                echo "  Status: Unknown (no mokutil and EFI variable unreadable)"
+            fi
+            echo ""
+        } >> "$REPORT_FILE"
+    fi
 
     # Check network connectivity
     if ping -c 1 8.8.8.8 &> /dev/null; then
