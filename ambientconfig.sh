@@ -863,6 +863,9 @@ verify_commands() {
     log "Starting basic system verification..."
 
     local failed=0
+    # Summary trackers
+    local secureboot_status="Unknown"
+    local docker_status="Unknown"
 
     # Check if system is Linux
     if [[ "$(uname -s)" != "Linux" ]]; then
@@ -947,11 +950,14 @@ verify_commands() {
             sb_status="$(mokutil --sb-state 2>/dev/null || true)"
 
             if echo "$sb_status" | grep -qi "disabled"; then
+                secureboot_status="Disabled"
                 log "Secure Boot: disabled ✓"
             elif echo "$sb_status" | grep -qi "enabled"; then
+                secureboot_status="ENABLED"
                 error "Secure Boot: ENABLED - please disable it in the BIOS/UEFI firmware for AmbientOS."
                 ((failed++))
             else
+                secureboot_status="Unknown"
                 warn "Secure Boot: unable to determine from mokutil output."
                 [[ -n "$sb_status" ]] && info "mokutil output: $sb_status"
             fi
@@ -965,9 +971,11 @@ verify_commands() {
                 sb_val="$(hexdump -v -e '1/1 "%d"' "$sb_file" 2>/dev/null || true)"
                 case "$sb_val" in
                     0)
+                        secureboot_status="Disabled"
                         log "Secure Boot: disabled (per EFI variable) ✓"
                         ;;
                     1)
+                        secureboot_status="ENABLED"
                         error "Secure Boot: ENABLED (per EFI variable) - please disable it in BIOS/UEFI."
                         ((failed++))
                         ;;
@@ -1008,13 +1016,16 @@ verify_commands() {
         docker_installed_ver="$(dpkg-query -W -f='${Version}' docker-ce 2>/dev/null || true)"
 
         if [[ "$docker_installed_ver" == "$docker_required_ver" ]]; then
+            docker_status="OK"
             log "Docker CE version OK: $docker_installed_ver (pinned version) ✓"
         else
+            docker_status="MISMATCH"
             warn "Docker CE version mismatch: Installed=$docker_installed_ver, Required=$docker_required_ver"
             warn "Docker may need to be downgraded or pinned properly."
             ((failed++))
         fi
     else
+        docker_status="Not Installed"
         info "Docker CE is not installed."
         warn "Docker pinned version $docker_required_ver is NOT present."
     fi
