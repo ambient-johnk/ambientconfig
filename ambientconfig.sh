@@ -898,6 +898,49 @@ verify_commands() {
         } >> "$REPORT_FILE"
     fi
 
+    # ---------------------------------------------------------
+    # Docker pinned version verification
+    # ---------------------------------------------------------
+    local docker_required_ver="5:28.5.2-1~ubuntu.24.04~noble"
+    local docker_installed_ver=""
+
+    if dpkg-query -W -f='${Version}' docker-ce 2>/dev/null | grep -q .; then
+        docker_installed_ver="$(dpkg-query -W -f='${Version}' docker-ce 2>/dev/null || true)"
+
+        if [[ "$docker_installed_ver" == "$docker_required_ver" ]]; then
+            log "Docker CE version OK: $docker_installed_ver (pinned version) ✓"
+        else
+            warn "Docker CE version mismatch: Installed=$docker_installed_ver, Required=$docker_required_ver"
+            warn "Docker may need to be downgraded or pinned properly."
+            ((failed++))
+        fi
+    else
+        info "Docker CE is not installed."
+        warn "Docker pinned version $docker_required_ver is NOT present."
+    fi
+
+    # Report logging
+    if [[ "${REPORT_MODE:-false}" == "true" ]]; then
+        {
+            echo ""
+            echo "Docker Version Check:"
+            if [[ -n "$docker_installed_ver" ]]; then
+                echo "  Installed: $docker_installed_ver"
+                echo "  Required:  $docker_required_ver"
+                if [[ "$docker_installed_ver" == "$docker_required_ver" ]]; then
+                    echo "  Status: OK (Pinned version installed)"
+                else
+                    echo "  Status: MISMATCH"
+                fi
+            else
+                echo "  Installed: Not installed"
+                echo "  Required:  $docker_required_ver"
+                echo "  Status: Missing"
+            fi
+            echo ""
+        } >> "$REPORT_FILE"
+    fi
+
     # Check network connectivity
     if ping -c 1 8.8.8.8 &> /dev/null; then
         log "Ping 8.8.8.8 Network connectivity: OK"
