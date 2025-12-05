@@ -1504,7 +1504,8 @@ install_pinned_docker() {
 
     # Install/upgrade/downgrade docker-ce and docker-ce-cli to the pinned version
     log "Installing docker-ce and docker-ce-cli at version $required_ver ..."
-    if ! apt-get install -y \
+    # Use --allow-downgrades so we can move from a newer Docker version to the pinned one
+    if ! apt-get install -y --allow-downgrades \
         docker-ce="$required_ver" \
         docker-ce-cli="$required_ver"; then
         error "Failed to install docker-ce=$required_ver and docker-ce-cli=$required_ver."
