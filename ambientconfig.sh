@@ -1657,8 +1657,8 @@ configure_timezone() {
         fi
     fi
 
-    # Try up to 5 times until htpdate says the clock needs no updating
-    local attempts=5
+    # Try up to 10 times until htpdate says the clock needs no updating
+    local attempts=10
     local synced=false
     for ((i=1; i<=attempts; i++)); do
         local out
