@@ -1491,8 +1491,8 @@ install_pinned_docker() {
     export DEBIAN_FRONTEND=noninteractive
 
     if ! apt-get update -y; then
-        error "apt-get update failed; cannot continue Docker installation."
-        return 1
+        warn "apt-get update encountered errors (possibly from unrelated repos, e.g. NVIDIA libnvidia-container)."
+        warn "Continuing Docker installation using existing package metadata."
     fi
 
     # Sanity check: make sure the target version is actually available in APT
