@@ -1,0 +1,6 @@
+release: 0.14
+date: 12052025
+changes:
+    - added Ookla speed check as optional network interface check
+    - fixed bug and enhanced loggin for checking SecureBoot
+    - added downgrading and pinning Docker version to config options
