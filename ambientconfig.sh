@@ -95,9 +95,9 @@ install_speedtest_cli() {
 
     export DEBIAN_FRONTEND=noninteractive
 
+    # Try to update, but don't treat failure as fatal
     if ! apt-get update -y >/dev/null 2>&1; then
-        error "apt-get update failed; cannot install speedtest-cli."
-        return 1
+        warn "apt-get update failed; attempting to install speedtest-cli with existing package metadata."
     fi
 
     if apt-get install -y speedtest-cli >/dev/null 2>&1; then
