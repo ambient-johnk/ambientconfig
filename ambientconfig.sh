@@ -1764,7 +1764,7 @@ main_menu() {
         echo "======================================"
         echo "          AmbientOS Appliance         "
         echo "      System Configuration Script     "
-        echo "      version 0.13 - 10232025 - jk    "
+        echo "      version 0.14 - 12052025 - jk    "
         echo "======================================"
         echo "System Verification:"
         echo "  1. Pre-Flight: Verify Basic System Requirements"
