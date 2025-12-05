@@ -115,7 +115,7 @@ install_speedtest_cli() {
 
         return 0
     else
-        error "Failed to install the Ubuntu speedtest-cli package."
+        warn "Failed to install the Ubuntu speedtest-cli package. Skipping speed test."
         return 1
     fi
 }
