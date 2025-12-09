@@ -1465,95 +1465,63 @@ install_pinned_docker() {
     local required_ver="5:28.5.2-1~ubuntu.24.04~noble"
     local current_ver=""
 
-    # Check if docker-ce is already installed and at the desired version
+    # Check installed version
     if dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null | grep -q .; then
         current_ver="$(dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null || true)"
+
         if [[ "$current_ver" == "$required_ver" ]]; then
-            log "docker-ce already installed at required version: $required_ver"
-            info "Ensuring APT pinning is in place..."
+            log "docker-ce already at required version: $required_ver"
+            info "APT pin already applied (if configured)."
         else
-            warn "docker-ce is installed at version: $current_ver"
-            warn "Required pinned version is: $required_ver"
-            read -p "Change to pinned version $required_ver? (y/N): " change_ver
-            if [[ ! "$change_ver" =~ ^[Yy]$ ]]; then
-                warn "User chose not to change Docker version. Aborting Docker step."
+            warn "docker-ce installed version: $current_ver"
+            warn "Required version: $required_ver"
+            read -p "Downgrade docker-ce to $required_ver? (y/N): " change_ver
+            [[ ! "$change_ver" =~ ^[Yy]$ ]] && {
+                warn "User declined downgrade."
                 return 1
-            fi
+            }
         fi
     else
-        info "docker-ce is not currently installed; proceeding with install."
+        info "docker-ce not installed; proceeding with initial install."
     fi
 
-    # We assume:
-    # - Docker APT repo is already configured
-    # - GPG key is already installed
-    # - apt transport bits already exist
     export DEBIAN_FRONTEND=noninteractive
 
+    # Attempt update, but if repo errors occur, continue with cached metadata
     if ! apt-get update -y; then
-        warn "apt-get update encountered errors (possibly from unrelated repos, e.g. NVIDIA libnvidia-container)."
-        warn "Continuing Docker installation using existing package metadata."
+        warn "apt-get update failed — continuing with existing metadata."
     fi
 
-    # Sanity check: make sure the target version is actually available in APT
-    if ! apt-cache madison docker-ce 2>/dev/null | awk '{print $3}' | grep -qx "$required_ver"; then
-        error "Required docker-ce version $required_ver is not available from configured repositories."
-        info  "Check 'apt-cache madison docker-ce' manually to see available versions."
+    # Verify that pinned version exists in APT metadata
+    local available
+    available="$(apt-cache madison docker-ce 2>/dev/null | awk '{print $3}' | grep -Fx "$required_ver" || true)"
+    if [[ -z "$available" ]]; then
+        error "docker-ce version $required_ver is NOT available in APT sources."
+        info  "Run 'apt-cache madison docker-ce' to view available versions."
         return 1
     fi
 
-    # Install/upgrade/downgrade docker-ce and docker-ce-cli to the pinned version
-    log "Installing docker-ce and docker-ce-cli at version $required_ver ..."
-    # Use --allow-downgrades so we can move from a newer Docker version to the pinned one
-    if ! apt-get install -y --allow-downgrades \
-        docker-ce="$required_ver" \
-        docker-ce-cli="$required_ver"; then
-        error "Failed to install docker-ce=$required_ver and docker-ce-cli=$required_ver."
+    # Install/downgrade ONLY docker-ce
+    log "Installing docker-ce=$required_ver (allowing downgrades)..."
+    if ! apt-get install -y --allow-downgrades docker-ce="$required_ver"; then
+        error "Failed to install docker-ce=$required_ver"
         return 1
     fi
 
-    # Optionally ensure supporting packages are present (no pinned version for these)
-    #apt-get install -y docker-buildx-plugin docker-compose-plugin containerd.io >/dev/null 2>&1 || \
-    #    warn "Failed to install one or more docker support packages (buildx/compose/containerd)."
-
-    # Re-read installed version
     current_ver="$(dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null || echo "unknown")"
     log "docker-ce installed version is now: $current_ver"
 
-    # --- Pin Docker CE and CLI to this version ---
-    log "Configuring APT pinning for Docker packages..."
+    # ------------------------
+    # APT Pinning
+    # ------------------------
+    log "Applying APT pin for docker-ce..."
     cat > /etc/apt/preferences.d/docker-pin <<EOF
 Package: docker-ce
 Pin: version ${required_ver}
 Pin-Priority: 1001
-
-Package: docker-ce-cli
-Pin: version ${required_ver}
-Pin-Priority: 1001
 EOF
 
-    # --- Enable and start Docker service ---
-    log "Enabling and starting docker.service..."
-    if ! systemctl enable --now docker >/dev/null 2>&1; then
-        error "Failed to enable/start docker.service. Check 'systemctl status docker'."
-        # Do not hard-fail here; Docker may still be installed correctly.
-    fi
-
-    # Verify Docker CLI
-    if command -v docker >/dev/null 2>&1; then
-        local dv
-        dv="$(docker --version 2>/dev/null || true)"
-        if [[ -n "$dv" ]]; then
-            log "Docker CLI version: $dv"
-        else
-            warn "docker command exists, but 'docker --version' returned no output."
-        fi
-    else
-        warn "docker binary not found in PATH after installation."
-    fi
-
-    # Show apt policy summary for docker-ce
-    info "APT policy for docker-ce (confirming pinning):"
+    info "APT policy for docker-ce:"
     apt-cache policy docker-ce || true
 
     if [[ "${REPORT_MODE:-false}" == "true" ]]; then
@@ -1565,10 +1533,11 @@ EOF
             echo ""
             echo "apt-cache policy docker-ce:"
             apt-cache policy docker-ce 2>&1
+            echo ""
         } >> "$REPORT_FILE"
     fi
 
-    log "Docker CE pinned installation step completed."
+    log "Docker CE pinned installation complete."
     return 0
 }
 
