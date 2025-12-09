@@ -1513,8 +1513,8 @@ install_pinned_docker() {
     fi
 
     # Optionally ensure supporting packages are present (no pinned version for these)
-    apt-get install -y docker-buildx-plugin docker-compose-plugin containerd.io >/dev/null 2>&1 || \
-        warn "Failed to install one or more docker support packages (buildx/compose/containerd)."
+    #apt-get install -y docker-buildx-plugin docker-compose-plugin containerd.io >/dev/null 2>&1 || \
+    #    warn "Failed to install one or more docker support packages (buildx/compose/containerd)."
 
     # Re-read installed version
     current_ver="$(dpkg-query -W -f='${Version}\n' docker-ce 2>/dev/null || echo "unknown")"
